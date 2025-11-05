@@ -95,7 +95,10 @@ def evaluate_models(X_train,
                     n_folds = 10, 
                     finetune_fraction = 1.0, 
                     verbose:bool = True,
-                    outdir = None
+                    outdir = None,
+                    scoring: str = "f1",
+                    X_train_raw = None,
+                    preprocessor = None
                    ):
     """
     Train and evaluate multiple models using cross-validation and test sets.
@@ -119,9 +122,9 @@ def evaluate_models(X_train,
     """
     try:
         report = {}
+        best_params_by_model = {}
 
         kfold = StratifiedKFold(n_splits=n_folds, random_state=42, shuffle = True)
-        scoring = "f1"
 
         if verbose:
             length = 110
@@ -141,23 +144,94 @@ def evaluate_models(X_train,
                 print("=" * length)
             if param_finetune:
                 logging.info(f"Fine tunning {model_name} model")
-                n_samples = int(finetune_fraction * len(y_train))
-                # Combine X_train and y_train into a single DataFrame
-                train_data = pd.concat([pd.DataFrame(X_train.reset_index(drop= True)), pd.DataFrame(y_train)], axis=1)
-                
-                # Sample the combined data
-                sampled_data = train_data.sample(n=n_samples, random_state=32)
-                
-                # Split back into X_train_cv and y_train_cv
-                X_train_cv = sampled_data.iloc[:, :-1].values  # All columns except the last one
-                y_train_cv = sampled_data.iloc[:, -1].values   # The last column
+                # Prefer raw X and an unfitted preprocessor to avoid leakage
+                use_pipeline_cv = (preprocessor is not None) and (X_train_raw is not None)
 
-                para=param[list(models.keys())[i]]
+                # Build CV data (stratified subsample if requested)
+                if use_pipeline_cv:
+                    X_source = X_train_raw
+                    y_source = pd.Series(y_train).values
+                    if finetune_fraction < 1.0:
+                        from sklearn.model_selection import StratifiedShuffleSplit
+                        splitter = StratifiedShuffleSplit(n_splits=1, train_size=finetune_fraction, random_state=32)
+                        idx_train, _ = next(splitter.split(np.asarray(X_source), y_source))
+                        # X_source is expected to be DataFrame; fall back to iloc if available, else array indexing
+                        if hasattr(X_source, 'iloc'):
+                            X_train_cv = X_source.iloc[idx_train]
+                        else:
+                            X_train_cv = X_source[idx_train]
+                        y_train_cv = y_source[idx_train]
+                    else:
+                        X_train_cv = X_source
+                        y_train_cv = y_source
+                else:
+                    # Fallback to already transformed features (may introduce mild leakage)
+                    if finetune_fraction < 1.0:
+                        from sklearn.model_selection import StratifiedShuffleSplit
+                        splitter = StratifiedShuffleSplit(n_splits=1, train_size=finetune_fraction, random_state=32)
+                        X_arr = np.asarray(X_train)
+                        y_arr = pd.Series(y_train).values
+                        idx_train, _ = next(splitter.split(X_arr, y_arr))
+                        X_train_cv = X_arr[idx_train]
+                        y_train_cv = y_arr[idx_train]
+                    else:
+                        X_train_cv = np.asarray(X_train)
+                        y_train_cv = pd.Series(y_train).values
 
-                gs = GridSearchCV(model,para,cv=kfold, scoring = scoring)
-                gs.fit(X_train_cv,y_train_cv)
-                model_best_params = gs.best_params_
+                # Match hyperparameter grid dict using case-insensitive key mapping
+                model_key = list(models.keys())[i]
+                param_key = next((k for k in param.keys() if k.lower() == model_key.lower()), None)
+                if param_key is None:
+                    raise CustomException(f"Hyperparameter grid not found for model '{model_key}'", sys)
+                para = param[param_key]
+
+                # If we can, run GridSearch over a Pipeline to refit preprocessing per fold
+                if use_pipeline_cv:
+                    try:
+                        from sklearn.pipeline import Pipeline
+                        from sklearn.base import clone
+                        pipe = Pipeline([
+                            ('preprocess', clone(preprocessor)),
+                            ('model', model)
+                        ])
+                        # Prefix grid keys with model__
+                        if isinstance(para, list):
+                            para_prefixed = [{f"model__{k}": v for k, v in d.items()} for d in para]
+                        else:
+                            para_prefixed = {f"model__{k}": v for k, v in para.items()}
+                        gs = GridSearchCV(pipe,
+                                          para_prefixed,
+                                          cv=kfold,
+                                          scoring=scoring,
+                                          n_jobs=-1,
+                                          error_score=np.nan)
+                        gs.fit(X_train_cv, y_train_cv)
+                        # Strip model__ prefix for setting on the bare estimator
+                        raw_best = gs.best_params_
+                        model_best_params = { (k.split('model__',1)[1] if k.startswith('model__') else k): v for k, v in raw_best.items() }
+                    except Exception as e:
+                        # Fallback to legacy behavior if pipeline-based GS fails
+                        gs = GridSearchCV(model,
+                                          para,
+                                          cv=kfold,
+                                          scoring=scoring,
+                                          n_jobs=-1,
+                                          error_score=np.nan)
+                        gs.fit(X_train_cv, y_train_cv)
+                        model_best_params = gs.best_params_
+                else:
+                    gs = GridSearchCV(model,
+                                      para,
+                                      cv=kfold,
+                                      scoring=scoring,
+                                      n_jobs=-1,
+                                      error_score=np.nan)
+                    gs.fit(X_train_cv, y_train_cv)
+                    model_best_params = gs.best_params_
+
                 model.set_params(**model_best_params)
+                # keep best params for later reporting
+                best_params_by_model[model_name] = model_best_params
             model.fit(X_train,y_train)
 
             #get cross validation and test report
@@ -166,13 +240,35 @@ def evaluate_models(X_train,
             
             # make predictions
             
-            y_train_pred = model.predict(X_train)  # prediction on train set
-            y_test_pred = model.predict(X_test)   # prediction on test set
+            y_train_pred = model.predict(X_train)  # prediction on train set (labels)
+            y_test_pred = model.predict(X_test)   # prediction on test set (labels)
+
+            # collect probability/score outputs for better ROC-AUC
+            def _prediction_scores(m, X):
+                try:
+                    if hasattr(m, "predict_proba"):
+                        proba = m.predict_proba(X)
+                        # binary -> return positive class prob; multi-class -> return full matrix
+                        if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] == 2:
+                            return proba[:, 1]
+                        return proba
+                    if hasattr(m, "decision_function"):
+                        return m.decision_function(X)
+                except Exception:
+                    pass
+                # fallback: use label predictions (poorer AUC)
+                try:
+                    return m.predict(X)
+                except Exception:
+                    return None
+
+            y_train_scores = _prediction_scores(model, X_train)
+            y_test_scores = _prediction_scores(model, X_test)
 
             logging.info(f"Testing {model_name} model")
 
-            train_report = get_test_report(y_train, y_train_pred)
-            test_report = get_test_report(y_test, y_test_pred)
+            train_report = get_test_report(y_train, y_train_pred, scores=y_train_scores)
+            test_report = get_test_report(y_test, y_test_pred, scores=y_test_scores)
             report[list(models.keys())[i]] = {"test_report":test_report, 
                                               "train_report":train_report, 
                                               "cross_val_report":cross_val_report}
@@ -244,7 +340,7 @@ def evaluate_models(X_train,
                 feature_status = "After Feature Selection" if "AfterFeatureSelection" in outdir else "Without Feature Selection"
                 fig.suptitle(f'Results for Model: {model_name} ({feature_status})', fontsize=18, y=2)
                 
-                # Save as PNG
+            # Save as PNG
                 png_path = os.path.join(model_outdir, 'png', f'{model_name}_results.png')
                 plt.savefig(png_path, bbox_inches='tight', dpi=300)
                 
@@ -258,12 +354,44 @@ def evaluate_models(X_train,
                 # Print file path to stdout (to be captured by Node.js)
                 relative_path = png_path.split('server/')[-1] if 'server/' in png_path else png_path
                 print(relative_path)
+
+            # --- Also save CSV exports for this model ---
+            try:
+                # 1) Summary table CSV (Cross Val / Train / Test)
+                summary_df = pd.DataFrame(
+                    data,
+                    columns=['Split', 'Accuracy', 'Precision', 'Recall', 'F1-Score', 'ROC-AUC', 'Support']
+                )
+                summary_df.to_csv(os.path.join(model_outdir, f'{model_name}_results.csv'), index=False, sep=';', encoding='utf-8-sig')
+
+                # 2) Per-fold CV scores CSV
+                cv_all = cross_val_report
+                folds = len(cv_all['accuracy']['all']) if isinstance(cv_all.get('accuracy', {}).get('all', []), list) else 0
+                if folds > 0:
+                    cv_df = pd.DataFrame({
+                        'Fold': list(range(1, folds + 1)),
+                        'Accuracy': cv_all['accuracy']['all'],
+                        'Precision': cv_all['precision']['all'],
+                        'Recall': cv_all['recall']['all'],
+                        'F1-Score': cv_all['f1']['all'],
+                        'ROC-AUC': cv_all['roc_auc']['all'],
+                    })
+                    cv_df.to_csv(os.path.join(model_outdir, f'{model_name}_cv_folds.csv'), index=False, sep=';', encoding='utf-8-sig')
+            except Exception:
+                # Do not fail evaluation due to CSV write issues
+                pass
                 
         if verbose:
             print("=" * length)
             print(f" Model Training and Evaluation Completed")
             print("=" * length)
                 
+        # If we collected any best params, print a special line for the Node server to capture
+        try:
+            if best_params_by_model:
+                print("BEST_PARAMS:", json.dumps(best_params_by_model))
+        except Exception:
+            pass
         return report
 
     except Exception as e:
@@ -289,18 +417,34 @@ def get_cross_validation_scores(model, X, y, cv):
 
 # Get test set evaluation metrics
 
-def get_test_report(true, predicted):
+def get_test_report(true, predicted, scores=None):
 
     """
     Run Various Evaluation Metrics on data
     """
     try:
-        score_report = {"f1":f1_score(true, predicted),
+        # Compute ROC-AUC using scores/probabilities if available
+        try:
+            roc_auc = None
+            if scores is not None:
+                arr = np.asarray(scores)
+                if arr.ndim == 1:
+                    roc_auc = roc_auc_score(true, arr)
+                elif arr.ndim == 2:
+                    # Multi-class probability/score matrix
+                    roc_auc = roc_auc_score(true, arr, multi_class='ovr')
+            else:
+                roc_auc = roc_auc_score(true, predicted)
+        except Exception:
+            # Fallback to label-based AUC (may be less informative)
+            roc_auc = roc_auc_score(true, predicted)
+
+        score_report = {"f1": f1_score(true, predicted),
                         "accuracy": accuracy_score(true, predicted),
-                        "roc_auc": roc_auc_score(true, predicted),
-                        "precision":precision_score(true, predicted),
-                        "recall":recall_score(true, predicted)
-                    }
+                        "roc_auc": roc_auc,
+                        "precision": precision_score(true, predicted),
+                        "recall": recall_score(true, predicted)
+                        }
         return score_report
 
     except Exception as e:
@@ -346,12 +490,30 @@ def getparams():
             "min_samples_leaf": [1, 2, 4],
             "max_features": [None, "sqrt", "log2"]
         },
-        "Logistic Regression": {
-            "penalty": ["l2", "elasticnet", None],
-            "C": [0.01, 0.1, 1.0, 10.0, 100.0],
-            "solver": ["lbfgs", "liblinear", "sag", "saga"],
-            "max_iter": [100, 200, 300],
-        },
+        "Logistic Regression": [
+            {
+                "penalty": ["l2"],
+                "C": [0.01, 0.1, 1.0, 10.0, 100.0],
+                "solver": ["lbfgs"],
+                "tol": [1e-3, 1e-4],
+                "max_iter": [1000, 3000, 5000]
+            },
+            {
+                "penalty": ["l1", "l2"],
+                "C": [0.01, 0.1, 1.0, 10.0, 100.0],
+                "solver": ["liblinear"],
+                "tol": [1e-3, 1e-4],
+                "max_iter": [1000, 3000, 5000]
+            },
+            {
+                "penalty": ["elasticnet"],
+                "C": [0.01, 0.1, 1.0, 10.0],
+                "solver": ["saga"],
+                "l1_ratio": [0.1, 0.5, 0.9],
+                "tol": [1e-3, 1e-4],
+                "max_iter": [3000, 5000]
+            }
+        ],
         "XGBClassifier": {
             "n_estimators": [100, 200, 300],
             "learning_rate": [0.001, 0.01, 0.1, 0.2],
@@ -371,20 +533,31 @@ def getparams():
             "learning_rate": [0.001, 0.01, 0.1, 1.0],
             "algorithm": ["SAMME", "SAMME.R"]
         },
-        "MLPClassifier": {
-            "hidden_layer_sizes": [(50,), (100,), (50, 50), (100, 100)],
-            "activation": ["identity", "logistic", "tanh", "relu"],
-            "solver": ["lbfgs", "sgd", "adam"],
-            "alpha": [0.0001, 0.001, 0.01],
-            "learning_rate": ["constant", "invscaling", "adaptive"],
-            "max_iter": [200, 300, 400]
-        },
-        "SVC": {
-            "C": [0.01, 0.1, 1.0, 10.0],
-            "kernel": ["linear", "poly", "rbf", "sigmoid"],
-            "degree": [3, 4],
-            "gamma": ["scale", "auto"]
-        }
+        "MLPClassifier": [
+            # adam with early stopping and higher max_iter
+            {
+                "solver": ["adam"],
+                "activation": ["relu", "tanh"],
+                "hidden_layer_sizes": [(50,), (100,), (100, 50)],
+                "alpha": [0.0001, 0.001],
+                "learning_rate": ["constant", "adaptive"],
+                "early_stopping": [True],
+                "max_iter": [600, 1000]
+            },
+            # lbfgs without early stopping
+            {
+                "solver": ["lbfgs"],
+                "activation": ["relu", "tanh"],
+                "hidden_layer_sizes": [(50,), (100,)],
+                "alpha": [0.0001, 0.001],
+                "max_iter": [600, 1000]
+            }
+        ],
+        "SVC": [
+            {"kernel": ["linear"], "C": [0.01, 0.1, 1.0, 10.0]},
+            {"kernel": ["rbf", "sigmoid"], "C": [0.01, 0.1, 1.0, 10.0], "gamma": ["scale", "auto"]},
+            {"kernel": ["poly"], "C": [0.01, 0.1, 1.0, 10.0], "degree": [3, 4], "gamma": ["scale", "auto"]}
+        ]
     }
     return params
 

@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import HelpTooltip from './common/HelpTooltip';
+import { helpTexts } from '../content/helpTexts';
 
 function BarChartWithSelection({ chartUrl, classList, onClassSelection }) {
   // State to keep track of selected classes
@@ -19,6 +21,9 @@ function BarChartWithSelection({ chartUrl, classList, onClassSelection }) {
 
   return (
     <div className="bar-chart-with-selection">
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <HelpTooltip placement="right" text={`${helpTexts.steps.step4.about} ${helpTexts.steps.step4.howTo}`}>info</HelpTooltip>
+      </div>
       {/* Bar chart image section */}
       <div className="chart-container">
         <img src={chartUrl} alt="Diagnosis Bar Chart" className="chart-image" />

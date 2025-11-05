@@ -4,6 +4,7 @@ from sklearn.manifold import TSNE
 from umap import UMAP
 import os, json
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.express as px
@@ -42,7 +43,36 @@ class Dimensionality_Reduction:
         """
         logging.info("List content: %s", str(data))
         self.data = data
-        self.X = data.drop(labels_column, axis = 1)
+        
+        # Prepare X matrix with categorical preprocessing
+        X_temp = data.drop(labels_column, axis=1)
+        
+        # Identify categorical and numerical columns
+        categorical_columns = X_temp.select_dtypes(include=['object']).columns.tolist()
+        numerical_columns = X_temp.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Apply One-Hot Encoding to categorical columns if any exist
+        self.categorical_encoding_info = {}
+        if categorical_columns:
+            dummies = pd.get_dummies(
+                X_temp[categorical_columns],
+                columns=categorical_columns,
+                prefix=categorical_columns,
+                drop_first=False,
+                dummy_na=False
+            )
+
+            # Store encoding information for frontend/logging
+            for col in categorical_columns:
+                generated_cols = [c for c in dummies.columns if c.startswith(f"{col}_")]
+                self.categorical_encoding_info[col] = {
+                    'generated_columns': list(generated_cols),
+                    'encoding_type': 'OneHot'
+                }
+
+            X_temp = pd.concat([X_temp.drop(columns=categorical_columns), dummies], axis=1)
+            
+        self.X = X_temp
         logging.info("self.X: %s", str(self.X))
         self.labels = data[labels_column]
         self.labels_column = labels_column

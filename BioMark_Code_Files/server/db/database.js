@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS notification_subscriptions (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  sent_at DATETIME,
+  error_message TEXT
+);
 `);
 
 module.exports = db; 

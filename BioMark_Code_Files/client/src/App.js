@@ -6,8 +6,12 @@ import ImagePopup from './components/step8-1_ImagePopup'; // Import the componen
 import InputFormatPopup from './components/step1_InputFormatPopup'; // Import the new popup component
 import AnalysisReport from './components/step9_AnalysisReport';
 import SearchableColumnList from './components/SearchableColumnList'; // IMPORT THE NEW COMPONENT
-import { api, buildUrl } from './api';
+import { api, buildUrl, apiFetch } from './api';
 import UserGuideModal from './components/UserGuideModal';
+import HelpTooltip from './components/common/HelpTooltip';
+import AggregationHelpContent from './components/common/AggregationHelpContent';
+import { helpTexts } from './content/helpTexts';
+import LongRunNotificationModal from './components/common/LongRunNotificationModal';
 
 function App() {
   // These are global variables. Values defined inside functions are not accessible everywhere. These solve that problem.
@@ -28,8 +32,10 @@ function App() {
   const [showStepSix, setShowStepSix] = useState(false);
   const [showStepAnalysis, setShowStepAnalysis] = useState(false);
   const [classTable, setClassTable] = useState({ class: [] }); // Stores class table
-  const [isDiffAnalysisClasses, setIsDiffAnalysisClasses] = useState([]); // Stores classes for differential analysis
+  // eslint-disable-next-line no-unused-vars
+  const [_isDiffAnalysisClasses, setIsDiffAnalysisClasses] = useState([]); // Stores classes for differential analysis
   const [afterFeatureSelection, setAfterFeatureSelection] = useState(false);
+  const [canUseAfterFS, setCanUseAfterFS] = useState(false); // availability of top-N features
   const [selectedClasses, setselectedClasses] = useState([]);
   const [anotherAnalysis, setAnotherAnalysis] = useState([0]); // Stores analysis blocks
   const [analysisInformation, setAnalysisInformation] = useState([]); // Stores analysis information
@@ -45,11 +51,15 @@ function App() {
   const [summarizeAnalyses, setSummarizeAnalyses] = useState([]); // Stores multiple summarize analyses
   const [info, setInfo] = useState('');
   const [processing, setProcessing] = useState(false); // Summarize process state
+  const [categoricalEncodingInfo, setCategoricalEncodingInfo] = useState(null); // Categorical encoding information
+  const [showCategoricalModal, setShowCategoricalModal] = useState(false); // Show categorical encoding modal
   const [selectedAnalyzes, setSelectedAnalyzes] = useState({
-    differential: [],
-    clustering: [],
-    classification: [],
+    statisticalTest: [],
+    dimensionalityReduction: [],
+    classificationAnalysis: [],
+    modelExplanation: []
   });
+  const [linkExists, setLinkExists] = useState({});
   // Parameter States
   const [useDefaultParams, setUseDefaultParams] = useState(true);
   // Differential Analysis Parameters
@@ -61,6 +71,10 @@ function App() {
   const [scoring, setScoring] = useState("f1");
   const [featureImportanceFinetune, setFeatureImportanceFinetune] = useState(false);
   const [numTopFeatures, setNumTopFeatures] = useState(20);
+  // Aggregation for Combine step
+  const [aggregationMethod, setAggregationMethod] = useState('rrf');
+  const [aggregationWeights, setAggregationWeights] = useState('');
+  const [rrfK, setRrfK] = useState(60);
   // Clustering Analysis Parameters
   const [plotter, setPlotter] = useState("seaborn");
   const [dim, setDim] = useState("3D");
@@ -72,6 +86,8 @@ function App() {
   const [saveDataTransformer, setSaveDataTransformer] = useState(true);
   const [saveLabelEncoder, setSaveLabelEncoder] = useState(true);
   const [verbose, setVerbose] = useState(true);
+  // eslint-disable-next-line no-unused-vars
+  const [usePreprocessing, setUsePreprocessing] = useState(false);
   // Common Parameters
   const [testSize, setTestSize] = useState(0.2);
   const [nFolds, setNFolds] = useState(5);
@@ -85,6 +101,12 @@ function App() {
   const [demoMode, setDemoMode] = useState(false);   // Add demo mode to the app state
   const [imageVersion, setImageVersion] = useState(0);
   const [showUserGuide, setShowUserGuide] = useState(false); // Controls user guide modal
+  const [plotGuideOpenByIndex, setPlotGuideOpenByIndex] = useState({}); // Results: per-analysis plot guide toggle
+
+  // Long-run notification modal and email state
+  const [showLongRunModal, setShowLongRunModal] = useState(false);
+  const [clientJobId, setClientJobId] = useState(null);
+  const [defaultNotifyEmail, setDefaultNotifyEmail] = useState('');
 
   // State for upload duration (file upload time)
   const [uploadDuration, setUploadDuration] = useState(null);
@@ -99,6 +121,278 @@ function App() {
     // Otherwise, use the first 10 of the current columns state
     return columns.slice(0, 10);
    }, [columns, allColumns]); // Add allColumns as a dependency
+
+  // Load last used email from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('notifyEmail');
+      if (saved) setDefaultNotifyEmail(saved);
+    } catch (e) {}
+  }, []);
+
+  const generateClientJobId = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    // Fallback simple UUID v4-like
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : ((r & 0x3) | 0x8);
+      return v.toString(16);
+    });
+  };
+
+  const parseFileSizeMB = (sizeStr) => {
+    if (!sizeStr) return 0;
+    const m = String(sizeStr).match(/([0-9]+\.?[0-9]*)\s*MB/i);
+    return m ? parseFloat(m[1]) : 0;
+  };
+
+  function computeLongRunRisk({
+    fileSizeMB = 0,
+    classificationModels = [],
+    paramFinetune = false,
+    finetuneFraction = 1.0
+  }) {
+    let score = 0;
+  
+    // File size
+    if (fileSizeMB > 50) score += 4;
+    else if (fileSizeMB > 30) score += 2;
+    else if (fileSizeMB > 10) score += 1;
+  
+    // Heavy classification models
+    const heavyModels = [
+      'XGBClassifier',
+      'CatBoosting Classifier',
+      'MLPClassifier',
+      'SVC',
+      'Random Forest',
+      'Gradient Boosting',
+      'AdaBoost'
+    ];
+    const usesHeavyModel = (classificationModels || []).some(m => heavyModels.includes(m));
+    if (usesHeavyModel) score += 3;
+  
+    // Finetune parameters
+    if (paramFinetune) score += 3;
+    if (finetuneFraction >= 0.9) score += 2;
+    else if (finetuneFraction > 0.5) score += 1;
+  
+    return score;
+  }
+
+  const isLikelyLongRun = () => {
+    const fileSizeMB = parseFileSizeMB(uploadedInfo?.size);
+    const score = computeLongRunRisk({
+      fileSizeMB,
+      classificationModels: selectedAnalyzes.classificationAnalysis || [],
+      paramFinetune,
+      finetuneFraction
+    });
+    return score >= 7;
+  };
+
+  // Build CSV download links for a given image path
+  const buildDownloadLinks = (imagePath) => {
+    try {
+      const links = [];
+      const parts = (imagePath || '').split('/');
+      const idxRes = parts.indexOf('results');
+      if (idxRes === -1) return links;
+      const fileName = parts[idxRes + 1];
+      const classPair = parts[idxRes + 2];
+
+      // Optional phase between classPair and method (e.g., 'initial', 'AfterFeatureSelection')
+      const afterPair = parts.slice(idxRes + 3);
+      const methodKeys = new Set(['t_test', 'anova', 'shap', 'lime', 'feature_importance', 'models', 'summaryStatisticalMethods']);
+      const foundIdx = afterPair.findIndex(seg => methodKeys.has(seg));
+      const phase = foundIdx > 0 ? afterPair.slice(0, foundIdx).join('/') : (foundIdx === 0 ? '' : afterPair.slice(0, 1).join('/'));
+      const sub1 = foundIdx >= 0 ? afterPair[foundIdx] : afterPair[0];
+
+      const basePrefix = `/results/${fileName}/${classPair}` + (phase ? `/${phase}` : '');
+
+      // Statistical: t_test / anova
+      if (sub1 === 't_test') {
+        links.push({ href: buildUrl(`${basePrefix}/t_test/t_test_results.csv`), label: 'Download Model Details as CSV' });
+        // Aggregated (combined) ranking for the class pair
+        links.push({ href: buildUrl(`/results/${fileName}/feature_ranking/${classPair}/ranked_features_df.csv`), label: 'Download Biomarker List (Combined)' });
+        // Method-specific ranked list for t_test only
+        links.push({ href: buildUrl(`/results/${fileName}/feature_ranking/${classPair}/method=statistical_tests_analysis=t_test/ranked_features_df.csv`), label: 'Download Biomarker List as CSV' });
+        return links;
+      }
+      if (sub1 === 'anova') {
+        links.push({ href: buildUrl(`${basePrefix}/anova/anova_results.csv`), label: 'Download Model Details as CSV' });
+        // Aggregated (combined) ranking for the class pair
+        links.push({ href: buildUrl(`/results/${fileName}/feature_ranking/${classPair}/ranked_features_df.csv`), label: 'Download Biomarker List (Combined)' });
+        // Method-specific ranked list for anova only
+        links.push({ href: buildUrl(`/results/${fileName}/feature_ranking/${classPair}/method=statistical_tests_analysis=anova/ranked_features_df.csv`), label: 'Download Biomarker List as CSV' });
+        return links;
+      }
+
+      // Model Explanation: SHAP / LIME
+      if (sub1 === 'shap') {
+        const raw = (imagePath.split('/').pop() || '').toLowerCase();
+        // Show only on a canonical SHAP image to avoid duplicates
+        if (raw.includes('mean_shap_plot_overall')) {
+          links.push({ href: buildUrl(`${basePrefix}/shap/shap_feature_importance.csv`), label: 'Download Model Details as CSV' });
+        }
+        return links;
+      }
+      if (sub1 === 'lime') {
+        const raw = (imagePath.split('/').pop() || '').toLowerCase();
+        // Show only on LIME summary image to avoid duplicates
+        if (raw.includes('lime_summary_plot')) {
+          links.push({ href: buildUrl(`${basePrefix}/lime/lime_feature_importance.csv`), label: 'Download Model Details as CSV' });
+        }
+        return links;
+      }
+
+      // Feature importance (Permutation and built-ins)
+      if (sub1 === 'feature_importance') {
+        const basePath = `${basePrefix}/feature_importance`;
+        const rawName = (imagePath.split('/').pop() || '').toLowerCase();
+        if (rawName.includes('permutation_features_plot')) {
+          links.push({ href: buildUrl(`${basePath}/permutation_feature_importance_summary.csv`), label: 'Download Summary CSV' });
+          links.push({ href: buildUrl(`${basePath}/permutation_feature_importance_matrix.csv`), label: 'Download Matrix CSV' });
+        } else {
+          const modelFile = (imagePath.split('/').pop() || '').replace('_feature_importance.png', '');
+          const csvPath = `${basePath}/${modelFile}_feature_importance.csv`;
+          links.push({ href: buildUrl(csvPath), label: 'Download Model Details as CSV' });
+        }
+        return links;
+      }
+
+      // Classification model results tables
+      if (sub1 === 'models') {
+        const modelName = parts[idxRes + 4] && !methodKeys.has(parts[idxRes + 4]) ? parts[idxRes + 4] : parts[idxRes + 5];
+        if (fileName && classPair && modelName) {
+          links.push({ href: buildUrl(`${basePrefix}/models/${modelName}/${modelName}_results.csv`), label: 'Download Model Details as CSV' });
+          links.push({ href: buildUrl(`${basePrefix}/models/${modelName}/${modelName}_cv_folds.csv`), label: 'Download CV CSV' });
+        }
+        return links;
+      }
+
+      return links;
+    } catch (e) {
+      return [];
+    }
+  };
+
+  // Check existence of candidate download links in wizard and cache results
+  useEffect(() => {
+    async function checkAllLinks() {
+      try {
+        const candidates = new Set();
+        (previousAnalyses || []).forEach((a) => {
+          (a?.results || []).forEach((p) => {
+            const links = buildDownloadLinks(p);
+            links.forEach((l) => {
+              if (!Object.prototype.hasOwnProperty.call(linkExists, l.href)) {
+                candidates.add(l.href);
+              }
+            });
+          });
+        });
+        if (candidates.size === 0) return;
+        const results = {};
+        await Promise.all(
+          Array.from(candidates).map(async (url) => {
+            try {
+              const res = await apiFetch(url, { method: 'HEAD' });
+              results[url] = res.ok === true;
+            } catch (e) {
+              results[url] = false;
+            }
+          })
+        );
+        setLinkExists((prev) => ({ ...prev, ...results }));
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (Array.isArray(previousAnalyses) && previousAnalyses.length > 0) {
+      checkAllLinks();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previousAnalyses]);
+
+  // Small helper component to render Best Params CSV link after checking existence
+  const BestParamsCsvLink = ({ firstResultPath, bestParams }) => {
+    const [url, setUrl] = React.useState(null);
+    const [exists, setExists] = React.useState(false);
+    const blobUrl = React.useMemo(() => {
+      try {
+        if (!bestParams) return null;
+        const rows = [['Model', 'Parameter', 'Value']];
+        Object.entries(bestParams).forEach(([modelName, paramsObj]) => {
+          if (paramsObj && typeof paramsObj === 'object') {
+            Object.entries(paramsObj).forEach(([k, v]) => {
+              const printable = Array.isArray(v) ? JSON.stringify(v) : String(v);
+              rows.push([modelName, k, printable]);
+            });
+          }
+        });
+        const csv = rows.map(r => r.map(x => '"' + String(x).replace(/"/g, '""') + '"').join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        return URL.createObjectURL(blob);
+      } catch (_) {
+        return null;
+      }
+    }, [bestParams]);
+    React.useEffect(() => () => { try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch (_) {} }, [blobUrl]);
+    React.useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          if (!firstResultPath) { setExists(false); setUrl(null); return; }
+          const parts = String(firstResultPath).split('/');
+          const idx = parts.indexOf('results');
+          if (idx < 0 || parts.length < idx + 3) { setExists(false); setUrl(null); return; }
+          const candidate = buildUrl(`/results/${parts[idx + 1]}/${parts[idx + 2]}/best_params.csv`);
+          setUrl(candidate);
+          try {
+            const res = await apiFetch(candidate, { method: 'HEAD' });
+            if (!cancelled) setExists(res.ok === true);
+          } catch (_) {
+            if (!cancelled) setExists(false);
+          }
+        } catch (_) {
+          if (!cancelled) { setExists(false); setUrl(null); }
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [firstResultPath]);
+    if (url && exists) {
+      return (
+        <div style={{ marginTop: 10 }}>
+          <a href={url} download style={{ padding: '6px 10px', border: '1px solid #d7e2ff', borderRadius: 6, background: '#eef3fd', color: '#2f4fb5', fontWeight: 700 }}>
+            Download Best Params CSV
+          </a>
+        </div>
+      );
+    }
+    if (blobUrl) {
+      return (
+        <div style={{ marginTop: 10 }}>
+          <a href={blobUrl} download="best_params.csv" style={{ padding: '6px 10px', border: '1px solid #d7e2ff', borderRadius: 6, background: '#eef3fd', color: '#2f4fb5', fontWeight: 700 }}>
+            Download Best Params CSV
+          </a>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  const handleNotifyConfirm = async (email) => {
+    try {
+      if (clientJobId) {
+        await api.post('/api/analysis/notify', { jobId: clientJobId, email });
+      }
+      try { localStorage.setItem('notifyEmail', email); } catch (e) {}
+    } catch (e) {
+      console.error('Failed to register notification:', e);
+    } finally {
+      setShowLongRunModal(false);
+    }
+  };
   
   // Helper Function: General function to fetch all columns (will use this function)
   const fetchAllColumnsGeneric = async (filePath) => { // filePath should be passed as a parameter
@@ -180,6 +474,9 @@ function App() {
 
   // Step 1: Function to open the format popup
   const handleOpenFormatPopup = () => {
+    // Starting/Guiding a new analysis should reset stage to All Features
+    setAfterFeatureSelection(false);
+    setCanUseAfterFS(false);
     setShowFormatPopup(true);
   };
 
@@ -192,6 +489,9 @@ function App() {
   const handleBrowseClick = () => {
     setFile(null); // Show file name when a file is selected
     setInfo(''); // Clear info message
+    // Reset stage to All Features when a fresh file is chosen
+    setAfterFeatureSelection(false);
+    setCanUseAfterFS(false);
     
     // Reset FileInput value
     if (fileInputRef.current) {
@@ -207,6 +507,9 @@ function App() {
     const startTime = performance.now();
     setDemoMode(true);
     setLoading(true);
+    // Reset feature selection stage for a fresh analysis session
+    setAfterFeatureSelection(false);
+    setCanUseAfterFS(false);
     setInfo('Loading demo dataset...');
     setFile(new File([""], "GSE120584_serum_norm_demo.csv", { type: "text/csv" }));
     setError(''); // Clear errors
@@ -535,22 +838,23 @@ function App() {
         return;
     }
 
-    const { differential = [], clustering = [], classification = [], useDefaultParams: useDefault, parameters } = selectedAnalyzesUpdate;
+    const { 
+      statisticalTest = [], 
+      dimensionalityReduction = [], 
+      classificationAnalysis = [], 
+      modelExplanation = [], 
+      useDefaultParams: useDefault, 
+      parameters 
+    } = selectedAnalyzesUpdate;
 
     // Update states
-    if (differential.length > 0) {
+    if (statisticalTest.length > 0 || modelExplanation.length > 0) {
       setIsDiffAnalysisClasses(selectedClasses); // This is also similar to selectedClasses
     } else {
         setIsDiffAnalysisClasses([]);
     }
 
-    setAfterFeatureSelection(false); // Reset feature selection state on new analysis selection
-    // If differential is selected and classes are the same, check after feature selection state (logic can be improved)
-    if (differential.length > 0 && isDiffAnalysisClasses[0] === selectedClasses[0] && isDiffAnalysisClasses[1] === selectedClasses[1]){
-      // setAfterFeatureSelection(true); // Better to set this based on analysis results
-    }
-
-    setSelectedAnalyzes({ differential, clustering, classification });
+    setSelectedAnalyzes({ statisticalTest, dimensionalityReduction, classificationAnalysis, modelExplanation });
     setUseDefaultParams(useDefault);
 
     // Update parameters if custom params are selected
@@ -574,6 +878,11 @@ function App() {
         setVerbose(parameters.verbose ?? true);
         setTestSize(parameters.testSize ?? 0.2);
         setNFolds(parameters.nFolds ?? 5);
+        setUsePreprocessing(parameters.usePreprocessing ?? false);
+        // Aggregation params (optional)
+        if (parameters.aggregationMethod !== undefined) setAggregationMethod?.(parameters.aggregationMethod);
+        if (parameters.aggregationWeights !== undefined) setAggregationWeights?.(parameters.aggregationWeights);
+        if (parameters.rrfK !== undefined) setRrfK?.(parameters.rrfK);
     } else {
         // Optionally reset to default parameters
     }
@@ -585,7 +894,7 @@ function App() {
     setInfo('Analysis method selected. You can now optionally exclude non-feature columns.');
     setTimeout(() => setInfo(''), 5000); // Message duration
 
-    console.log("handleAnalysisSelection finished. State updated:", { differential, clustering, classification, useDefaultParams: useDefault });
+    console.log("handleAnalysisSelection finished. State updated:", { statisticalTest, dimensionalityReduction, classificationAnalysis, modelExplanation, useDefaultParams: useDefault });
   };
 
 
@@ -610,32 +919,51 @@ function App() {
     // Logic for hiding Step 7 is in useEffect (if needed)
   };
 
-  // 7.Adım: Run Analysis butonuna tıklandığında
-  const handleRunAnalysis = async () => {
-    // Check if all required selections are made
-    if (!uploadedInfo?.filePath || !selectedIllnessColumn || !selectedSampleColumn || selectedClasses.length !== 2) {
-        setError("Please complete all selections in steps 3 and 4 before running the analysis.");
-        setAnalyzing(false);
-        return;
-    }
-    // Check if at least one analysis type is selected
-     if (selectedAnalyzes.differential.length === 0 && selectedAnalyzes.clustering.length === 0 && selectedAnalyzes.classification.length === 0) {
-         setError("Please select at least one analysis method in step 5.");
-         setAnalyzing(false);
-         return;
-     }
+  // Show categorical encoding information to user
+  const showCategoricalEncodingInfo = (encodingInfo) => {
+    setCategoricalEncodingInfo(encodingInfo);
+    setShowCategoricalModal(true);
+  };
 
-    const payload = {
+  // Close categorical encoding modal
+  const closeCategoricalModal = () => {
+    setShowCategoricalModal(false);
+    setCategoricalEncodingInfo(null);
+  };
+
+  // 7.Adım: Analizi başlatma tetikleyicisi (Run Analysis butonu için)
+  const handleStartAnalysis = async () => {
+    if (analyzing) return;
+    const longRun = isLikelyLongRun();
+    const newJobId = generateClientJobId();
+    setClientJobId(newJobId);
+    if (longRun) {
+      setShowLongRunModal(true);
+      // Run analysis immediately; user may still opt-in to email in modal
+      await handleRunAnalysisWithJob(newJobId);
+    } else {
+      await handleRunAnalysisWithJob(newJobId);
+    }
+  };
+
+  const handleRunAnalysisWithJob = async (jobId) => {
+    const basePayload = await buildRunPayload();
+    return runAnalysisWithPayload({ ...basePayload, clientJobId: jobId });
+  };
+
+  const buildRunPayload = async () => {
+    return {
       filePath: uploadedInfo.filePath,
       IlnessColumnName: selectedIllnessColumn,
       SampleColumnName: selectedSampleColumn,
       selectedClasses: selectedClasses,
-      differential: selectedAnalyzes.differential,
-      clustering: selectedAnalyzes.clustering,
-      classification: selectedAnalyzes.classification,
+      statisticalTest: selectedAnalyzes.statisticalTest,
+      dimensionalityReduction: selectedAnalyzes.dimensionalityReduction,
+      classificationAnalysis: selectedAnalyzes.classificationAnalysis,
+      modelExplanation: selectedAnalyzes.modelExplanation,
       nonFeatureColumns: nonFeatureColumns,
-      isDiffAnalysis: selectedAnalyzes.differential, // Add differential analyses directly here
-      afterFeatureSelection: afterFeatureSelection, // Add after feature selection state
+      isDiffAnalysis: [...selectedAnalyzes.statisticalTest, ...selectedAnalyzes.modelExplanation],
+      afterFeatureSelection: afterFeatureSelection,
       useDefaultParams: useDefaultParams,
       featureType: featureType,
       referenceClass: referenceClass,
@@ -657,53 +985,47 @@ function App() {
       testSize: testSize,
       nFolds: nFolds
     };
+  };
 
+  const runAnalysisWithPayload = async (payload) => {
+    // Validate selections
+    if (!uploadedInfo?.filePath || !selectedIllnessColumn || !selectedSampleColumn || selectedClasses.length !== 2) {
+      setError("Please complete all selections in steps 3 and 4 before running the analysis.");
+      setAnalyzing(false);
+      return;
+    }
+    if (selectedAnalyzes.statisticalTest.length === 0 && selectedAnalyzes.dimensionalityReduction.length === 0 && selectedAnalyzes.classificationAnalysis.length === 0) {
+      setError("Please select at least one analysis method in step 5.");
+      setAnalyzing(false);
+      return;
+    }
     console.log("Running analysis with payload:", payload);
     setError('');
     setAnalyzing(true);
-
     try {
       const response = await api.post('/analyze', payload);
-      console.log("Analysis response:", response.data);
+      // ... reuse existing handling from handleRunAnalysis ...
+      if (response.data.categoricalEncodingInfo) {
+        showCategoricalEncodingInfo(response.data.categoricalEncodingInfo);
+      }
       if (response.data.success) {
-      // Create a new analysis object and add to previousAnalyses
-      const newAnalysis = {
+        const newAnalysis = {
           results: response.data.imagePaths || [],
           time: response.data.elapsedTime || "N/A",
           date: new Date().toLocaleString('en-GB'),
           parameters: payload,
-          analysisInfo: { ...selectedAnalyzes }
+          analysisInfo: { ...selectedAnalyzes },
+          bestParams: response.data.bestParams || null
         };
-
-        // If differential analysis is performed and "AfterFeatureSelection" folder exists in results, feature selection is done
-        if (selectedAnalyzes.differential && selectedAnalyzes.differential.length > 0) {
-          const hasFeatureSelection = response.data.imagePaths.some(
-            path => path.includes('AfterFeatureSelection') || path.includes('afterFeatureSelection')
-          );
-          if (hasFeatureSelection) {
-            setAfterFeatureSelection(true);
-            console.log("Feature Selection performed, afterFeatureSelection state set to true");
-          }
-        }
-
-        // Update previous analyses and information
+        const paths2 = response.data.imagePaths || [];
+        const hasAfterFSFolder2 = paths2.some(p => /AfterFeatureSelection/i.test(p));
+        const producedFeatureScores2 = paths2.some(p => /(feature_importance|anova|t_test|shap|lime|feature_ranking)/i.test(p));
+        if (producedFeatureScores2) setCanUseAfterFS(true);
+        if (hasAfterFSFolder2) { setAfterFeatureSelection(true); setCanUseAfterFS(true); }
         setPreviousAnalyses((prev) => [...prev, newAnalysis]);
         setAnalysisInformation((prev) => [...prev, payload]);
-
-        // After analysis, hide current steps (results will be shown)
-      setShowStepOne(false);
-      setShowStepTwo(false);
-      setShowStepThree(false);
-      setShowStepFour(false);
-      setShowStepFive(false);
-      setShowStepSix(false);
-      setShowStepAnalysis(false);
-
-        // Scroll to the section with results (Post-analysis options)
-        setTimeout(() => {
-            if (pageRef.current) scrollToStep(pageRef);
-        }, 100);
-
+        setShowStepOne(false); setShowStepTwo(false); setShowStepThree(false); setShowStepFour(false); setShowStepFive(false); setShowStepSix(false); setShowStepAnalysis(false);
+        setTimeout(() => { if (pageRef.current) scrollToStep(pageRef); }, 100);
       } else {
         setError(response.data.message || 'An error occurred during analysis. Please check the server logs.');
       }
@@ -711,18 +1033,9 @@ function App() {
       setError('An error occurred during analysis communication. Please try again.');
       console.error('Error analyzing file:', error.message || error);
     } finally {
-        setAnalyzing(false);
+      setAnalyzing(false);
     }
-
   };
-
-  // 7.Adım: Analizi başlatma tetikleyicisi (Run Analysis butonu için)
-  const handleStartAnalysis =() => {
-    // Analiz zaten çalışmıyorsa başlat
-    if (!analyzing) {
-    handleRunAnalysis();
-  }
-  }
 
   // Final Adımı 1: Yeni analiz yapma butonu
   const handlePerformAnotherAnalysis = () => {
@@ -741,18 +1054,13 @@ function App() {
     setShowStepAnalysis(false);
     
     // Optionally reset previous selections (user may want to continue)
-    setClassTable({ class: [] });
+    // Keep classTable intact to avoid re-fetching and reloading the diagnosis distribution chart
     setselectedClasses([]);
-    setSelectedAnalyzes({ differential: [], clustering: [], classification: [] });
+    setSelectedAnalyzes({ statisticalTest: [], dimensionalityReduction: [], classificationAnalysis: [], modelExplanation: [] });
     setUseDefaultParams(true);
     // Optionally reset parameters as well.
 
-    // If previous selectedIllnessColumn exists, reload classTable
-    if (selectedIllnessColumn) {
-      // Directly calling handleIllnessColumnSelection may not have the expected effect due to timing of state updates.
-      // But this should trigger the API call.
-      handleIllnessColumnSelection(selectedIllnessColumn);
-    }
+    // Do not re-fetch classes; reuse existing classTable/classDiagramUrl if dataset & columns are unchanged
 
     setTimeout(() => {
       const targetRef = stepFourRef.current || stepThreeRef.current;
@@ -801,9 +1109,10 @@ function App() {
     setDemoMode(false);
 
     setSelectedAnalyzes({
-      differential: [],
-      clustering: [],
-      classification: [],
+      statisticalTest: [],
+      dimensionalityReduction: [],
+      classificationAnalysis: [],
+      modelExplanation: []
     });
     
     // Reset parameter states
@@ -843,13 +1152,15 @@ function App() {
 
     // Check if any differential analysis has been performed
     const hasDifferentialAnalyses = previousAnalyses.some(
-      analysis => analysis.parameters && 
-                  analysis.parameters.differential && 
-                  analysis.parameters.differential.length > 0
+      analysis => analysis.parameters &&
+                  ((analysis.parameters.statisticalTest &&
+                  analysis.parameters.statisticalTest.length > 0) ||
+                  (analysis.parameters.modelExplanation &&
+                  analysis.parameters.modelExplanation.length > 0))
     );
 
     if (!hasDifferentialAnalyses) {
-      setError("No differential analyses found to combine. Please run a differential analysis first.");
+      setError("No analysis that generates a biomarker list has been performed. Please run a Statistical Test or Model Explanation analysis first.");
       setProcessing(false);
       return;
     }
@@ -863,10 +1174,25 @@ function App() {
     console.log("Summarize request - selectedClassPair:", selectedClassPair, "featureCount:", selectedFeatureCount);
 
     try {
+      // Validate aggregation weights JSON if needed
+      if (aggregationMethod === 'weighted_borda' && aggregationWeights && String(aggregationWeights).trim() !== '') {
+        try {
+          JSON.parse(aggregationWeights);
+        } catch (e) {
+          setProcessing(false);
+          setError('Weights must be valid JSON for weighted_borda, e.g. {"shap":1.5,"anova":1.0}');
+          return;
+        }
+      }
+
       const response = await api.post('/summarize_statistical_methods', {
         featureCount: selectedFeatureCount,
         filePath: uploadedInfo.filePath,
-        selectedClassPair: selectedClassPair
+        selectedClassPair: selectedClassPair,
+        // Optional aggregation overrides for combine step
+        aggregationMethod: aggregationMethod || undefined,
+        aggregationWeights: aggregationWeights || undefined,
+        rrfK: typeof rrfK === 'number' ? rrfK : undefined
       });
       
       console.log("Summarize response:", response.data);
@@ -885,13 +1211,15 @@ function App() {
           const imagePath = response.data.imagePath;
           const timestamp = new Date().getTime();
           
-          let determinedClassPair = selectedClassPair || response.data.analyzedClassPair;
+          // Accept either key from backend to be robust
+          let determinedClassPair = selectedClassPair || response.data.selectedClassPair || response.data.analyzedClassPair;
+          const aggregationLabel = response.data.aggregationLabel || '';
           if (!determinedClassPair) {
             // If selectedClassPair is null and backend did not send analyzedClassPair, try to find the only class pair
             const differentialAnalysisClassPairs = [
               ...new Set(
                 previousAnalyses
-                  .filter(a => a.parameters && a.parameters.differential && a.parameters.differential.length > 0)
+                  .filter(a => a.parameters && ((a.parameters.statisticalTest && a.parameters.statisticalTest.length > 0) || (a.parameters.modelExplanation && a.parameters.modelExplanation.length > 0)))
                   .map(a => {
                     if (a.parameters.selectedClasses && a.parameters.selectedClasses.length >= 2) {
                       return a.parameters.selectedClasses.join('_');
@@ -914,17 +1242,18 @@ function App() {
             imagePath: imagePath,
             timestamp: timestamp,
             version: imageVersion + 1,
-            featureCount: selectedFeatureCount
+            featureCount: selectedFeatureCount,
+            aggregationLabel: aggregationLabel,
+            csvPath: response.data.csvPath || null
           };
 
           // Keep only the most recent summary for a given class pair.
           // Whenever a new summary is generated for the same class pair (irrespective of the selected feature count),
           // remove the previous one so that only the latest user choice is displayed.
           setSummarizeAnalyses(prev => {
-              // Filter out **all** summaries that belong to the same class pair
-              const withoutCurrentPair = prev.filter(s => s.classPair !== newSummary.classPair);
-              // Append the newly generated summary
-              return [...withoutCurrentPair, newSummary];
+              // Allow multiple summaries per class pair by aggregation label
+              const withoutSamePairAndLabel = prev.filter(s => !(s.classPair === newSummary.classPair && (s.aggregationLabel || '') === (newSummary.aggregationLabel || '')));
+              return [...withoutSamePairAndLabel, newSummary];
           });
 
           setImageVersion(prev => prev + 1);
@@ -1144,7 +1473,9 @@ function App() {
                 <div ref={stepThreeRef} className="select-class-section step-three-container">
                 <div className="step-and-instruction">
                   <div className="step-number">3</div>
-                  <h2 className="title">Select Columns for Patient Groups and Sample IDs</h2>
+                  <h2 className="title">Select Columns for Patient Groups and Sample IDs {' '}
+                    <HelpTooltip text={`${helpTexts.steps.step3.about} ${helpTexts.steps.step3.howTo}`}>info</HelpTooltip>
+                  </h2>
                 </div>
                 
                   <div className="column-selection-area">
@@ -1160,7 +1491,7 @@ function App() {
                         placeholder="Search Patient Group column..."
                         listHeight="150px"
                         isLoading={loadingAllColumns}
-                        disabled={loadingAllColumns || loadingClasses}
+                        disabled={loadingAllColumns}
                       />
                   </div>
 
@@ -1175,7 +1506,7 @@ function App() {
                           placeholder="Search Sample ID column..."
                           listHeight="150px"
                           isLoading={loadingAllColumns}
-                          disabled={loadingAllColumns || loadingClasses}
+                          disabled={loadingAllColumns}
                         />
                   </div>
 
@@ -1222,11 +1553,21 @@ function App() {
                 {selectedClasses.length > 0 && (
                   <div className="step-and-instruction">
                     <div className="step-number">5</div>
-                    <h1 className='title'>Choose an analysis method</h1>
+                    <h1 className='title' style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      Choose an analysis method
+                      <HelpTooltip placement="right" text={helpTexts.steps.step5.about}>info</HelpTooltip>
+                    </h1>
                   </div>
                 )}
                 {selectedClasses.length > 0 && (
-                  <AnalysisSelection onAnalysisSelection={handleAnalysisSelection} />
+                  <AnalysisSelection
+                    onAnalysisSelection={handleAnalysisSelection}
+                    afterFeatureSelection={afterFeatureSelection}
+                    onToggleAfterFS={setAfterFeatureSelection}
+                    canUseAfterFS={canUseAfterFS}
+                    computedNumTopFeatures={numTopFeatures}
+                    onNumTopFeaturesChange={setNumTopFeatures}
+                  />
                 )}
               </div>
               )}
@@ -1235,7 +1576,9 @@ function App() {
                 <div ref={stepSixRef} className="step-container step-six-container">
                   <div className="step-and-instruction-step6">
                     <div className="step-number">6</div>
-                    <h1 className="title">Exclude Non-Feature Columns (Optional)</h1>
+                    <h1 className="title">Exclude Non-Feature Columns (Optional) {' '}
+                      <HelpTooltip text={`${helpTexts.steps.step6.about} ${helpTexts.steps.step6.tips}`}>info</HelpTooltip>
+                    </h1>
                   </div>
                   
                   <div className="non-feature-selection-area">
@@ -1278,10 +1621,15 @@ function App() {
               )}
               {/* Step 7: Run Analysis */}
               {showStepAnalysis && (
-                <div ref={stepAnalysisRef} className="run-analysis-section">
-                  <button className="run-analysis-button" onClick={handleStartAnalysis}>
-                    Run Analysis
-                  </button>
+                <div ref={stepAnalysisRef} className="run-analysis-section" style={{ display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', whiteSpace: 'nowrap' }}>
+                    <button className="run-analysis-button" onClick={handleStartAnalysis}>
+                      Run Analysis
+                    </button>
+                    <span style={{ display: 'inline-flex' }}>
+                      <HelpTooltip placement="right" text={helpTexts.steps.run.note}>info</HelpTooltip>
+                    </span>
+                  </div>
                 </div>
               )}
               {analyzing && (
@@ -1340,9 +1688,13 @@ function App() {
                           <div className="analysis-detail">
                             <span className="detail-label">Analysis Method:</span>
                             <span className="detail-value">
-                              {analysisInformation[index].differential?.length > 0 && `Differential: ${analysisInformation[index].differential.join(', ')}`}
-                              {analysisInformation[index].clustering?.length > 0 && ` Clustering: ${analysisInformation[index].clustering.join(', ')}`}
-                              {analysisInformation[index].classification?.length > 0 && ` Classification: ${analysisInformation[index].classification.join(', ')}`}
+                              {/* New logic for displaying analysis methods */}
+                              {[
+                                analysisInformation[index].statisticalTest?.length > 0 && `Statistical Test: ${analysisInformation[index].statisticalTest.join(', ')}`,
+                                analysisInformation[index].dimensionalityReduction?.length > 0 && `Dimensionality Reduction: ${analysisInformation[index].dimensionalityReduction.join(', ')}`,
+                                analysisInformation[index].classificationAnalysis?.length > 0 && `Classification: ${analysisInformation[index].classificationAnalysis.join(', ')}`,
+                                analysisInformation[index].modelExplanation?.length > 0 && `Explanation: ${analysisInformation[index].modelExplanation.join(', ')}`
+                              ].filter(Boolean).join(' | ')}
                             </span>
                           </div>
                           <div className="analysis-detail">
@@ -1367,14 +1719,22 @@ function App() {
                     <table className="parameters-horizontal-table">
                       <thead>
                         <tr>
-                          {/* Dynamically generate headers */}
-                          {analysisInformation[index].differential?.length > 0 && (
-                              <><th>Feature Type</th><th>Ref Class</th><th>LIME Samples</th><th>SHAP Finetune</th><th>LIME Finetune</th><th>Scoring</th><th>Feat.Importance Finetune</th><th>Top Features</th></>
+                          {/* Common for Statistical & Explanation */}
+                          {(analysisInformation[index].statisticalTest?.length > 0 || analysisInformation[index].modelExplanation?.length > 0) && (
+                            <><th>Feature Type</th><th>Ref Class</th><th>Scoring</th><th>Top Features</th></>
                           )}
-                          {analysisInformation[index].clustering?.length > 0 && (
+
+                          {/* Explanation Specific */}
+                          {analysisInformation[index].modelExplanation?.includes('SHAP') && <th>SHAP Finetune</th>}
+                          {analysisInformation[index].modelExplanation?.includes('LIME') && <><th>LIME Samples</th><th>LIME Finetune</th></>}
+                          {analysisInformation[index].modelExplanation?.includes('Permutation-Feature-Importance') && <th>Feat.Imp Finetune</th>}
+
+                          {/* Clustering */}
+                          {analysisInformation[index].dimensionalityReduction?.length > 0 && (
                               <><th>Plotter</th><th>Dimension</th></>
                           )}
-                          {analysisInformation[index].classification?.length > 0 && (
+                          {/* Classification */}
+                          {analysisInformation[index].classificationAnalysis?.length > 0 && (
                               <><th>Param Finetune</th><th>Finetune Frac</th><th>Save Model</th><th>Std Scaling</th><th>Save Transformer</th><th>Save Encoder</th><th>Verbose</th></>
                           )}
                           {/* Common */}
@@ -1383,43 +1743,157 @@ function App() {
                       </thead>
                       <tbody>
                         <tr>
-                          {/* Dynamically insert values */}
-                          {analysisInformation[index].differential?.length > 0 && (
+                          {/* Common for Statistical & Explanation */}
+                          {(analysisInformation[index].statisticalTest?.length > 0 || analysisInformation[index].modelExplanation?.length > 0) && (
                             <>
                               <td>{analysisInformation[index].featureType}</td>
-                                  <td>{analysisInformation[index].referenceClass || "Auto"}</td>
-                              <td>{analysisInformation[index].limeGlobalExplanationSampleNum}</td>
-                                  <td className={analysisInformation[index].shapModelFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].shapModelFinetune)}</td>
-                                  <td className={analysisInformation[index].limeModelFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].limeModelFinetune)}</td>
+                              <td>{analysisInformation[index].referenceClass || "Auto"}</td>
                               <td>{analysisInformation[index].scoring}</td>
-                                  <td className={analysisInformation[index].featureImportanceFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].featureImportanceFinetune)}</td>
                               <td>{analysisInformation[index].numTopFeatures}</td>
                             </>
                           )}
-                          {analysisInformation[index].clustering?.length > 0 && (
+
+                          {/* Explanation Specific */}
+                          {analysisInformation[index].modelExplanation?.includes('SHAP') && 
+                            <td className={analysisInformation[index].shapModelFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].shapModelFinetune)}</td>
+                          }
+                          {analysisInformation[index].modelExplanation?.includes('LIME') && 
+                            <>
+                              <td>{analysisInformation[index].limeGlobalExplanationSampleNum}</td>
+                              <td className={analysisInformation[index].limeModelFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].limeModelFinetune)}</td>
+                            </>
+                          }
+                          {analysisInformation[index].modelExplanation?.includes('Permutation-Feature-Importance') &&
+                            <td className={analysisInformation[index].featureImportanceFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].featureImportanceFinetune)}</td>
+                          }
+
+                          {/* Clustering */}
+                          {analysisInformation[index].dimensionalityReduction?.length > 0 && (
                                <><td>{analysisInformation[index].plotter}</td><td>{analysisInformation[index].dim}</td></>
                           )}
-                          {analysisInformation[index].classification?.length > 0 && (
+                          {/* Classification */}
+                          {analysisInformation[index].classificationAnalysis?.length > 0 && (
                               <>
                                   <td className={analysisInformation[index].paramFinetune ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].paramFinetune)}</td>
-                              <td>{analysisInformation[index].finetuneFraction}</td>
+                                  <td>{analysisInformation[index].finetuneFraction}</td>
                                   <td className={analysisInformation[index].saveBestModel ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].saveBestModel)}</td>
                                   <td className={analysisInformation[index].standardScaling ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].standardScaling)}</td>
                                   <td className={analysisInformation[index].saveDataTransformer ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].saveDataTransformer)}</td>
+                                  <td className={analysisInformation[index].saveLabelEncoder ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].saveLabelEncoder)}</td>
                                   <td className={analysisInformation[index].verbose ? "boolean-true" : "boolean-false"}>{String(analysisInformation[index].verbose)}</td>
-                            </>
+                              </>
                           )}
+                          
                           {/* Common */}
                           <td>{analysisInformation[index].testSize}</td><td>{analysisInformation[index].nFolds}</td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
-                </div>
+              </div>
 
-                {/* Analysis Results - moved below the parameter table */}
-                <div className="result-block-container" style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '1200px' }}>
-                  {previousAnalyses[index].results.map((imagePath, imgIndex) => {
+              {/* Analysis Results - moved below the parameter table */}
+              {/* Plots info launcher */}
+              <div style={{ width: '100%', display: 'flex', justifyContent: 'center', margin: '8px 0 8px 0' }}>
+                <button
+                  onClick={() => setPlotGuideOpenByIndex(prev => ({ ...prev, [index]: !prev[index] }))}
+                  className="plot-guide-button"
+                  style={{
+                    padding: '6px 14px', borderRadius: '999px', background: '#eef3fd', color: '#2f4fb5',
+                    border: '1px solid #d7e2ff', fontWeight: 700, letterSpacing: '0.2px', cursor: 'pointer',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.06)'
+                  }}
+                >
+                  Plot guide
+                </button>
+              </div>
+              {plotGuideOpenByIndex[index] && (
+                <div style={{
+                  width: '100%', maxWidth: '980px', margin: '0 auto 12px auto',
+                  background: '#ffffff', border: '1px solid #e6e9f2', borderRadius: '10px',
+                  boxShadow: '0 6px 18px rgba(0,0,0,0.06)', padding: '14px 16px'
+                }}>
+                  {/* Classification */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#2b365a', marginBottom: '6px' }}>Classification</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                      <HelpTooltip placement="right" text={helpTexts.results.general.classificationTable}>Performance Table</HelpTooltip>
+                    </div>
+                  </div>
+                  {/* Statistical Tests */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#2b365a', marginBottom: '6px' }}>Statistical Tests</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                      <HelpTooltip placement="right" text={helpTexts.results.statistical.topbars}>Top-N Features (Bar)</HelpTooltip>
+                    </div>
+                  </div>
+                  {/* Dimensionality Reduction */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#2b365a', marginBottom: '6px' }}>Dimensionality Reduction</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                      <HelpTooltip placement="right" text={helpTexts.results.dimReduction.pca}>PCA</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.dimReduction.tsne}>t-SNE</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.dimReduction.umap}>UMAP</HelpTooltip>
+                    </div>
+                  </div>
+                  {/* Model Explanation */}
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#2b365a', marginBottom: '6px' }}>Model Explanation</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.shapSummary || 'Each dot is a sample; color shows feature value; left/right moves prediction down/up.'}>SHAP Summary</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.shapHeatmap || 'Samples vs. features; color encodes SHAP value (impact).'}>SHAP Heatmap</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.shapWaterfall || 'Base value to final prediction with per-feature pushes (red up, blue down).'}>SHAP Waterfall</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.shapForce || 'How features push a single prediction higher or lower.'}>SHAP Force</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.limeLocal || 'Linear explanation for one sample; positive/negative weights show direction/strength.'}>LIME Local</HelpTooltip>
+                      <HelpTooltip placement="right" text={helpTexts.results.explanation?.permutationImportance || 'Drop in score when a feature is shuffled; larger drop = more important.'}>Permutation Importance</HelpTooltip>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="result-block-container" style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '1200px' }}>
+                {previousAnalyses[index]?.bestParams && (
+                  <div style={{ width: '100%', margin: '10px 0', textAlign: 'center' }}>
+                    <h3>Optimized Hyperparameters (GridSearchCV)</h3>
+                    {Object.entries(previousAnalyses[index].bestParams).map(([modelName, paramsObj]) => (
+                      <div key={modelName} style={{ margin: '10px auto', maxWidth: '900px' }}>
+                        <h4 style={{ margin: '8px 0' }}>{modelName}</h4>
+                        <table style={{
+                          width: '100%',
+                          borderCollapse: 'collapse',
+                          background: '#fff',
+                          border: '1px solid #e0e0e0'
+                        }}>
+                          <thead>
+                            <tr style={{ background: '#f5f7fb' }}>
+                              <th style={{ border: '1px solid #e0e0e0', padding: '6px 8px', textAlign: 'left' }}>Parameter</th>
+                              <th style={{ border: '1px solid #e0e0e0', padding: '6px 8px', textAlign: 'left' }}>Value</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(paramsObj).map(([pKey, pVal]) => (
+                              <tr key={pKey}>
+                                <td style={{ border: '1px solid #e0e0e0', padding: '6px 8px' }}>{pKey}</td>
+                                <td style={{ border: '1px solid #e0e0e0', padding: '6px 8px' }}>{String(pVal)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                    {previousAnalyses[index]?.results && previousAnalyses[index].results.length > 0 && (
+                      <BestParamsCsvLink firstResultPath={previousAnalyses[index].results[0]} bestParams={previousAnalyses[index]?.bestParams} />
+                    )}
+                  </div>
+                )}
+                  {previousAnalyses[index].results
+                    .filter(imagePath => {
+                      // If an explanation method is selected, filter out the classification performance metric images.
+                      if (analysisInformation[index].modelExplanation?.length > 0) {
+                        return !imagePath.includes('results.png');
+                      }
+                      return true; // Otherwise, show all images.
+                    })
+                    .map((imagePath, imgIndex) => {
                     // Extract file name and add more detailed logging
                     console.log("imagePath: ", imagePath);
                     const rawImageName = imagePath.split('/').pop(); // Get the full file name
@@ -1487,13 +1961,50 @@ function App() {
                       console.log("Default All Features title applied:", imageName);
                     }
 
+                    // Determine contextual help text by filename
+                    const lower = imagePath.toLowerCase();
+                    let contextualHelp = null;
+                    if (lower.includes('results.png')) {
+                      contextualHelp = 'Performance table: Rows indicate Cross-Validation, Train and Test sets; columns show metrics (Accuracy, Precision, Recall, F1, ROC-AUC) and Support (number of samples). Under class imbalance, prioritize Recall/F1 over Accuracy.';
+                    } else if (lower.includes('pca')) {
+                      contextualHelp = helpTexts.results.dimReduction.pca;
+                    } else if (lower.includes('tsne')) {
+                      contextualHelp = helpTexts.results.dimReduction.tsne;
+                    } else if (lower.includes('umap')) {
+                      contextualHelp = helpTexts.results.dimReduction.umap;
+                    } else if (lower.includes('heatmap')) {
+                      contextualHelp = helpTexts.results.statistical.heatmap;
+                    } else if (lower.includes('volcano')) {
+                      contextualHelp = helpTexts.results.statistical.volcano;
+                    } else if (lower.includes('box') || lower.includes('violin')) {
+                      contextualHelp = helpTexts.results.statistical.box;
+                    } else if ((lower.includes('top') && lower.includes('feature')) || lower.includes('bar')) {
+                      contextualHelp = helpTexts.results.statistical.topbars;
+                    }
+
+                    const downloadLinks = buildDownloadLinks(imagePath);
                     return (
-                      <div key={`${index}-${imgIndex}`} className="result-block" style={{ margin: '10px', display: 'flex', justifyContent: 'center' }}>
-                        {/* ImagePopup Component */}
+                      <div key={`${index}-${imgIndex}`} className="result-block" style={{ margin: '10px', display: 'flex', justifyContent: 'center', position: 'relative' }}>
+                        {contextualHelp && (
+                          <div style={{ position: 'absolute', top: 6, right: 6 }}>
+                            <HelpTooltip text={contextualHelp}>info</HelpTooltip>
+                          </div>
+                        )}
                         <ImagePopup 
                           imagePath = {buildUrl(`/${imagePath}`)}
                           imageName = {imageName}
                         />
+                        {downloadLinks.length > 0 && (
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+                            {downloadLinks
+                              .filter((l) => linkExists[l.href] === true)
+                              .map((l, i) => (
+                                <a key={i} href={l.href} download style={{ padding: '6px 10px', border: '1px solid #d7e2ff', borderRadius: 6, background: '#eef3fd', color: '#2f4fb5', fontWeight: 700 }}>
+                                  {l.label}
+                                </a>
+                              ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1538,13 +2049,41 @@ function App() {
                   {error && previousAnalyses.length > 0 && !processing && (
                     <div className="error-message" style={{textAlign: 'center', marginBottom: '10px'}}>{error}</div>
                   )}
-                  <button 
-                    className="button summarize-statistical-methods" 
-                    onClick={() => handleSummarizeStatisticalMethods()}
-                    disabled={processing}
-                  >
-                    {processing ? 'Processing...' : 'Combine the above biomarker list in to one list'}
-                  </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                    <div className="combine-aggregation-controls" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }}>
+                      <label style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        Aggregation method
+                        <HelpTooltip placement="right" text={<AggregationHelpContent />}>info</HelpTooltip>
+                      </label>
+                      <select value={aggregationMethod} onChange={(e) => setAggregationMethod(e.target.value)}>
+                        <option value="rrf">Reciprocal Rank Fusion</option>
+                        <option value="rank_product">Rank Product</option>
+                        <option value="weighted_borda">Weighted Borda Count</option>
+                        <option value="sum">Simple Sum</option>
+                      </select>
+                      {aggregationMethod === 'weighted_borda' && (
+                        <>
+                          <label style={{ fontWeight: 600 }}>weights (JSON)</label>
+                          <input type="text" value={aggregationWeights} onChange={(e) => setAggregationWeights(e.target.value)} placeholder='{"shap":1.5,"anova":1.0,"t_test":1.0,"lime":1.2}' style={{ minWidth: 280 }} />
+                        </>
+                      )}
+                      {aggregationMethod === 'rrf' && (
+                        <>
+                          <label style={{ fontWeight: 600 }}>rrf_k</label>
+                          <select value={rrfK} onChange={(e) => setRrfK(Number(e.target.value))}>
+                            {[20,40,60,80,100,120].map(v => (<option key={v} value={v}>{v}</option>))}
+                          </select>
+                        </>
+                      )}
+                    </div>
+                    <button 
+                      className="button summarize-statistical-methods" 
+                      onClick={() => handleSummarizeStatisticalMethods()}
+                      disabled={processing}
+                    >
+                      {processing ? 'Processing...' : 'Combine the above biomarker list in to one list'}
+                    </button>
+                  </div>
                   
                   {/* Class pair selection modal */}
                   {availableClassPairs.length > 0 && (
@@ -1582,6 +2121,17 @@ function App() {
                             key={`summary-image-${summary.timestamp}-${summary.version}`}
                             imagePath={buildUrl(`/${summary.imagePath}?t=${summary.timestamp}&v=${summary.version}`)}
                           />
+                          {summary.csvPath && (
+                            <div style={{ marginTop: 8, textAlign: 'center' }}>
+                              <a
+                                href={buildUrl(`/${summary.csvPath}?t=${summary.timestamp}&v=${summary.version}`)}
+                                download
+                                style={{ textDecoration: 'underline' }}
+                              >
+                                Download CSV used for this heatmap
+                              </a>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1633,9 +2183,10 @@ function App() {
                         date: analysis.date, // Analysis's own date
                         time: analysis.time, // Analysis's own time
                         types: { // Analysis's own types
-                          differential: analysisParams.differential || [],
-                          clustering: analysisParams.clustering || [],
-                          classification: analysisParams.classification || []
+                          statisticalTest: analysisParams.statisticalTest || [],
+                          dimensionalityReduction: analysisParams.dimensionalityReduction || [],
+                          classificationAnalysis: analysisParams.classificationAnalysis || [],
+                          modelExplanation: analysisParams.modelExplanation || []
                         },
                         parameters: analysisParams // All other parameters that might be needed in the report
                       };
@@ -1660,6 +2211,67 @@ function App() {
           )}
         </div>
       ))}
+
+      {/* Categorical Encoding Information Modal */}
+      {showCategoricalModal && categoricalEncodingInfo && (
+        <div className="modal-overlay" onClick={closeCategoricalModal}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Categorical Data Encoding Information</h3>
+              <button className="close-button" onClick={closeCategoricalModal}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>The following categorical columns were automatically encoded for analysis:</p>
+              {Object.entries(categoricalEncodingInfo).map(([columnName, info]) => (
+                <div key={columnName} className="encoding-info">
+                  <h4>Column: {columnName}</h4>
+                  <p><strong>Encoding Type:</strong> {info.encoding_type}</p>
+                  {Array.isArray(info.generated_columns) && info.generated_columns.length > 0 ? (
+                    <>
+                      <p><strong>Generated One-Hot Columns:</strong></p>
+                      <ul>
+                        {info.generated_columns.map((col) => (
+                          <li key={col}>{col}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    info.original_values && info.encoded_values ? (
+                      <>
+                        <p><strong>Original Values → Encoded Values:</strong></p>
+                        <ul>
+                          {info.original_values.map((originalValue, index) => (
+                            <li key={index}>
+                              "{originalValue}" → {info.encoded_values[index]}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : null
+                  )}
+                </div>
+              ))}
+              <div className="encoding-note">
+                <p><strong>Note:</strong> This automatic encoding enables statistical and machine learning analyses on categorical data. When One-Hot Encoding is used, each category becomes a separate binary (0/1) feature without imposing any artificial order.</p>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-primary" onClick={closeCategoricalModal}>
+                OK, Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Long-run notification modal */}
+      {showLongRunModal && (
+        <LongRunNotificationModal
+          defaultEmail={defaultNotifyEmail}
+          onConfirm={handleNotifyConfirm}
+          onCancel={() => setShowLongRunModal(false)}
+        />
+      )}
 
     </div>
   );

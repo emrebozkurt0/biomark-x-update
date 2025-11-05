@@ -1,16 +1,21 @@
+# Logger module for the server
 import logging
 import os
 from datetime import datetime
 
-# Create a unique log file name based on the current date and time
-LOG_FILE=f"{datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.log"
-logs_path=os.path.join(os.getcwd(),"logs",LOG_FILE)
-os.makedirs(logs_path,exist_ok=True)
+# 1. Önce log dosyasının adını belirleyin
+LOG_FILE_NAME = f"{datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.log"
 
-# Full path for the log file
-LOG_FILE_PATH=os.path.join(logs_path,LOG_FILE)
+# 2. Logların saklanacağı DİZİNİ (klasörü) belirleyin
+LOGS_DIR = os.path.join(os.getcwd(), "logs")
 
-# Configure the logging settings
+# 3. O DİZİNİ oluşturun
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# 4. Log dosyasının tam YOLUNU belirleyin (Dizin + Dosya Adı)
+LOG_FILE_PATH = os.path.join(LOGS_DIR, LOG_FILE_NAME)
+
+# 5. Logging'i bu YOL ile yapılandırın
 logging.basicConfig(
     filename=LOG_FILE_PATH,
     format="[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s",

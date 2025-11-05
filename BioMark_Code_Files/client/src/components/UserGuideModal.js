@@ -2,6 +2,7 @@ import React from 'react';
 import '../css/userGuideModal.css';
 // Dynamically build backend URL to avoid hard-coded localhost/port
 import { buildUrl } from '../api';
+import { helpTexts } from '../content/helpTexts';
 
 const UserGuideModal = ({ onClose }) => {
   return (
@@ -116,6 +117,17 @@ const UserGuideModal = ({ onClose }) => {
                 The downloadable PDF report is structured to be publication-ready. It strategically begins with your most critical finding—the consolidated biomarker list—and is followed by a detailed breakdown of all the plots from your individual analyses (Waterfall, Force, Summary, Heatmap, ANOVA, etc.).
               </li>
             </ol>
+          </div>
+          {/* Glossary and Interpreting Results */}
+          <div className="guide-steps">
+            <h3>Glossary</h3>
+            <ul>
+              {helpTexts.glossary.items.map((item, idx) => (
+                <li key={idx}>{item}</li>
+              ))}
+            </ul>
+            <h3 style={{ marginTop: '12px' }}>Interpreting Results</h3>
+            <p>{helpTexts.glossary.interpreting}</p>
           </div>
         </div>
       </div>

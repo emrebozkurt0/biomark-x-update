@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import jsPDF from 'jspdf';
 import '../css/step9-generateAnalysisReport.css';
 import { buildUrl } from '../api';
+import HelpTooltip from './common/HelpTooltip';
+import { helpTexts } from '../content/helpTexts';
 
 /**
  * Component for generating biomarker analysis report
@@ -571,15 +573,17 @@ const AnalysisReport = ({
 
   return (
     <div>
-      <button 
-        className="generate-report-button" 
-        onClick={generatePDF}
-        title="Generate a professional PDF report of your analysis results"
-        disabled={loading}
-      >
-        <i className="report-icon">{loading ? '⏳' : '📊'}</i>
-        {loading ? 'Generating Report...' : 'Generate Analysis Report'}
-      </button>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '6px' }}>
+        <button 
+          className="generate-report-button" 
+          onClick={generatePDF}
+          title="Generate a professional PDF report of your analysis results"
+          disabled={loading}
+        >
+          <i className="report-icon">{loading ? '⏳' : '📊'}</i>
+          {loading ? 'Generating Report...' : 'Generate Analysis Report'}
+        </button>
+      </div>
       
       {/* Loading Overlay */}
       {loading && (

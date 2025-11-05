@@ -49,7 +49,9 @@
   padding: 12px 25px;
   margin-left: 0%;
   border-radius: 5px;
-  width: 25%;
+  width: auto; /* Let content define width to prevent truncation */
+  min-width: 180px; /* Reasonable minimum so text always fits */
+  white-space: nowrap; /* Keep label on one line */
   border: none;
   cursor: pointer;
   font-size: 18px;

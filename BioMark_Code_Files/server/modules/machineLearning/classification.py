@@ -18,7 +18,6 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder,StandardScaler, LabelEncoder
-from sklearn.preprocessing import OrdinalEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 
@@ -26,6 +25,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from modules.exception import CustomException
 from modules.logger import logging
 from modules.utils import save_object, evaluate_models, load_json, save_json, getparams
+from modules.modelExplanation.feature_importance_analysis import plot_feature_importance
 
 class Classification:
     """
@@ -60,6 +60,8 @@ class Classification:
         List of models to use for classification. Default includes "Logistic Regression" and "Decision Tree".
     verbose : bool, optional
         Whether to print detailed logs during execution. Default is True.
+    num_top_features : int, optional
+        Number of top features to display in feature importance plots. Default is 20.
 
     Attributes
     ----------
@@ -94,14 +96,23 @@ class Classification:
                  save_data_transformer:bool = False,
                  save_label_encoder:bool = False,
                  model_list:list = ["Logistic Regression", "Decision Tree"],
-                 verbose:bool = True
+                 verbose:bool = True,
+                 scoring:str = "f1",
+                 num_top_features:int = 20,
+                 use_preprocessing: bool = False
                  ):
         """
         Initialize the Classification class with dataset and configuration options.
         """
 
-        self.data = data
-        self.data.columns = [f"Feature_{i}" if feature != labels_column else feature for i, feature in enumerate(data.columns)]  
+        # Preserve original->internal feature mapping so we can reverse map
+        self.original_columns = list(data.columns)
+        self.labels_column = labels_column
+        self.feature_map = {feature: (labels_column if feature == labels_column else f"Feature_{i}") for i, feature in enumerate(self.original_columns)}
+        self.feature_map_reverse = {v: k for k, v in self.feature_map.items()}
+
+        self.data = data.copy()
+        self.data.columns = [self.feature_map[col] for col in self.original_columns]
         self.outdir = outdir
         self.labels_column = labels_column
         self.n_folds = n_folds
@@ -114,6 +125,11 @@ class Classification:
         self.save_label_encoder = save_label_encoder
         self.model_list = model_list
         self.verbose = verbose
+        self.num_top_features = num_top_features
+        self.scoring = scoring
+        self.use_preprocessing = use_preprocessing
+        # Will be populated after fitting the transformer when categorical encoding is applied
+        self.categorical_encoding_info = {}
         
 
     def build_transformer(self):
@@ -132,6 +148,30 @@ class Classification:
             If an error occurs during transformer construction.
         """
         try:
+            # Allow disabling preprocessing and passing features through unchanged
+            if not self.use_preprocessing:
+                logging.info("Preprocessing is DISABLED. Applying minimum preprocessing: numeric imputation + categorical one-hot.")
+                # Minimum preprocessing: impute numerics, impute+OHE categoricals, no scaling
+                min_num_pipeline = Pipeline(
+                    steps=[
+                    ("imputer", SimpleImputer(strategy="median")),
+                    ]
+                )
+                min_cat_pipeline = Pipeline(
+                    steps=[
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("categorical_encoder", OneHotEncoder(handle_unknown='ignore', sparse_output=False)),
+                    ]
+                )
+                preprocessor = ColumnTransformer(
+                    [
+                    ("num_pipeline", min_num_pipeline, self.numerical_columns),
+                    ("cat_pipeline", min_cat_pipeline, self.categorical_columns),
+                    ],
+                    remainder="drop"
+                )
+                return preprocessor
+
             # set standard scaling configs
             if self.standard_scaling:
                 num_standard_scaler = StandardScaler()
@@ -149,7 +189,7 @@ class Classification:
             cat_pipeline=Pipeline(
                 steps=[
                 ("imputer",SimpleImputer(strategy="most_frequent")),
-                ("categorical_encoder",OneHotEncoder(sparse_output=False)),
+                ("categorical_encoder",OneHotEncoder(handle_unknown='ignore', sparse_output=False)),
                 ("scaler",cat_standard_scaler)
                 ]
             )
@@ -166,6 +206,17 @@ class Classification:
             raise CustomException(e,sys)
 
     
+    def _strip_transformer_prefix(self, column_name):
+        """
+        Normalize transformed feature names coming from ColumnTransformer with
+        pandas output. It strips any pipeline/step prefixes like
+        "num_pipeline__Feature_12" -> "Feature_12" so that reverse mapping to
+        original column names works correctly.
+        """
+        if isinstance(column_name, str) and "__" in column_name:
+            return column_name.split("__")[-1]
+        return column_name
+
     def data_transfrom(self):
         """
         Split the data into training and test sets, encode labels, and apply preprocessing.
@@ -185,6 +236,8 @@ class Classification:
             # create train test split
             self.X = self.data.drop(self.labels_column, axis = 1)
             self.labels = self.data[self.labels_column]
+            # Keep class names for JSON grouping
+            self.class_names = list(pd.Series(self.labels).unique())
     
             # encode labels
             label_encoder = LabelEncoder()
@@ -194,34 +247,84 @@ class Classification:
             if self.save_label_encoder:
                 save_object(f"{self.outdir}/artifacts/label_encoder.pkl", label_encoder)
             
-            X_train, X_test, self.y_train, self.y_test = train_test_split(self.X, self.y, test_size=self.test_size, random_state=32)
+            X_train, X_test, self.y_train, self.y_test = train_test_split(
+                self.X,
+                self.y,
+                test_size=self.test_size,
+                random_state=32,
+                stratify=self.y
+            )
+            # keep raw splits for CV inside Pipeline (to avoid leakage)
+            self.X_train_raw = X_train.copy()
+            self.X_test_raw = X_test.copy()
     
             # initialize transformer
             self.numerical_columns = [feature for feature in self.X.columns if self.X[feature].dtype != 'O']
             self.categorical_columns = [feature for feature in self.X.columns if self.X[feature].dtype == 'O']
-            preprocessor = self.build_transformer()
+            
+            # Log column identification
+            logging.info(f"Identified {len(self.numerical_columns)} numerical columns and {len(self.categorical_columns)} categorical columns")
+            if self.categorical_columns:
+                logging.info(f"Categorical columns: {self.categorical_columns}")
+            
+            self.preprocessor = self.build_transformer()
             
             # fit transformer and transform training data
-            self.X_train = preprocessor.fit_transform(X_train)
+            self.X_train = self.preprocessor.fit_transform(X_train)
             # transform test data
-            self.X_test = preprocessor.transform(X_test)
+            self.X_test = self.preprocessor.transform(X_test)
+
+            # Populate categorical encoding info for frontend (if One-Hot was used)
+            try:
+                cat_transformer = None
+                if hasattr(self.preprocessor, 'named_transformers_'):
+                    if 'cat_pipelines' in self.preprocessor.named_transformers_:
+                        cat_transformer = self.preprocessor.named_transformers_['cat_pipelines']
+                    elif 'cat_pipeline' in self.preprocessor.named_transformers_:
+                        cat_transformer = self.preprocessor.named_transformers_['cat_pipeline']
+
+                if cat_transformer and hasattr(cat_transformer, 'named_steps') and 'categorical_encoder' in cat_transformer.named_steps:
+                    ohe = cat_transformer.named_steps['categorical_encoder']
+                    if hasattr(ohe, 'categories_') and self.categorical_columns:
+                        info = {}
+                        for col, cats in zip(self.categorical_columns, ohe.categories_):
+                            # Map internal Feature_i back to original column name for UI
+                            original_col = self.feature_map_reverse.get(col, col)
+                            # For display, generate human-readable OHE columns using original name
+                            generated = [f"{original_col}_{str(cat)}" for cat in cats]
+                            info[original_col] = {
+                                'generated_columns': generated,
+                                'encoding_type': 'OneHot'
+                            }
+                        self.categorical_encoding_info = info
+            except Exception:
+                # Do not fail the pipeline if metadata extraction fails
+                pass
     
             # save transformer
             if self.save_data_transformer:
-                save_object(f"{self.outdir}/artifacts/preprocessor.pkl", preprocessor)
+                save_object(f"{self.outdir}/artifacts/preprocessor.pkl", self.preprocessor)
 
         except Exception as e:
             raise CustomException(e,sys)
 
     
-    def initiate_model_trainer(self):
+    def initiate_model_trainer(self, return_models=False):
         """
         Train models and evaluate their performance using cross-validation.
+        Also handles feature importance plotting for specific models.
+
+        Parameters
+        ----------
+        return_models : bool, optional
+            If True, returns the trained model objects and their paths. 
+            Default is False.
 
         Returns
         -------
-        tuple
-            A tuple containing the best model name and its score.
+        tuple or dict
+            If return_models is False, returns a tuple of (best_model_name, best_model_score).
+            If return_models is True, returns a dictionary containing trained model info.
 
         Raises
         ------
@@ -231,15 +334,15 @@ class Classification:
         try:
 
             models_base = {
-                "Logistic Regression": LogisticRegression(random_state = 32),
-                "Random Forest": RandomForestClassifier(random_state = 32),
-                "XGBClassifier": XGBClassifier(random_state = 32),
-                "Decision Tree": DecisionTreeClassifier(random_state = 32), 
-                "Gradient Boosting": GradientBoostingClassifier(random_state = 32),
-                "CatBoosting Classifier": CatBoostClassifier(random_state = 32,verbose=False),
-                "AdaBoost Classifier": AdaBoostClassifier(random_state = 32),
-                "MLPClassifier": MLPClassifier(random_state = 32, verbose=False),
-                "SVC": SVC(kernel="linear",random_state = 32, probability=True)
+                "logistic regression": LogisticRegression(random_state = 32, solver = "lbfgs", penalty = "l2", max_iter = 2000),
+                "random forest": RandomForestClassifier(random_state = 42, n_jobs=-1),
+                "xgbclassifier": XGBClassifier(random_state = 42, n_jobs=-1),
+                "decision tree": DecisionTreeClassifier(random_state = 32), 
+                "gradient boosting": GradientBoostingClassifier(random_state = 32),
+                "catboosting classifier": CatBoostClassifier(random_state = 32,verbose=False),
+                "adaboost classifier": AdaBoostClassifier(random_state = 32),
+                "mlpclassifier": MLPClassifier(random_state = 32, verbose=False),
+                "svc": SVC(kernel="rbf",random_state = 32, probability=True)
                 }
             models = {model_name:models_base[model_name] for model_name in self.model_list}
             
@@ -256,9 +359,80 @@ class Classification:
                                               param_finetune = self.param_finetune,
                                               finetune_fraction = self.finetune_fraction,
                                               verbose = self.verbose,
-                                              outdir = self.outdir
+                                              outdir = self.outdir,
+                                              scoring = self.scoring,
+                                              X_train_raw = getattr(self, 'X_train_raw', None),
+                                              preprocessor = getattr(self, 'preprocessor', None)
                                               )
             
+            # --- Built-in Feature Importance for XGBoost and RandomForest ---
+            # Standardize model names for feature importance check
+            xgb_key = "xgbclassifier"
+            rf_key = "random forest"
+            for model_name, model_instance in models.items():
+
+                # Compare in a case-insensitive way or with the standardized keys
+                if model_name.lower() in [xgb_key, rf_key] and hasattr(model_instance, 'feature_importances_'):
+                    if self.verbose:
+                        print(f"Generating feature importance plot for {model_name}...")
+                    
+                    # Create a temporary dictionary for this model's importance
+                    # Reverse map internal names (Feature_i) to original names for display
+                    internal_feature_names = [self._strip_transformer_prefix(col) for col in self.X_train.columns.tolist()]
+                    readable_feature_names = [self.feature_map_reverse.get(col, col) for col in internal_feature_names]
+                    feature_importance_dict = {
+                        model_name: {
+                            "feature_names": readable_feature_names,
+                            "feature_importances": model_instance.feature_importances_.tolist()
+                        }
+                    }                    
+                    # Generate and save the plot
+                    plot_feature_importance(
+                        feature_importance_dict,
+                        outdir=self.outdir,
+                        num_top_features=self.num_top_features
+                    )
+
+                    # Also update feature_importances.json grouped by class pairs
+                    try:
+                        # Save at base results/<file>/feature_importances.json
+                        # self.outdir is results/<file>/<class_pair>/... -> go two levels up
+                        base_outdir = os.path.dirname(os.path.dirname(self.outdir))
+                        json_path = os.path.join(base_outdir, "feature_importances.json")
+
+                        if os.path.exists(json_path):
+                            with open(json_path, "r") as f:
+                                try:
+                                    existing_data = json.load(f)
+                                except json.JSONDecodeError:
+                                    existing_data = {}
+                        else:
+                            existing_data = {}
+
+                        # Class pair key
+                        if hasattr(self, 'class_names') and len(self.class_names) >= 2:
+                            class_pair = f"{self.class_names[0]}_{self.class_names[1]}"
+                        else:
+                            # Fallback if class names missing
+                            class_pair = "all_classes"
+
+                        if class_pair not in existing_data:
+                            existing_data[class_pair] = {}
+
+                        # Save importances under model-specific keys
+                        model_key = "xgb_feature_importance" if model_name.lower() == xgb_key else "randomforest_feature_importance"
+                        if model_key not in existing_data[class_pair]:
+                            existing_data[class_pair][model_key] = {}
+
+                        for feat_name, importance in zip(readable_feature_names, model_instance.feature_importances_.tolist()):
+                            existing_data[class_pair][model_key][feat_name] = float(importance)
+
+                        with open(json_path, "w") as f:
+                            json.dump(existing_data, f, indent=4)
+                    except Exception:
+                        # Do not fail training due to JSON write
+                        pass
+
             # Update the JSON file with new model results without resetting existing content
             json_path = f"{self.outdir}/model_reports.json"            
             
@@ -278,6 +452,42 @@ class Classification:
             # Save updated JSON
             with open(json_path, "w") as f:
                 json.dump(existing_data, f, indent=4)
+
+            # --- Combined summary across models (CSV) ---
+            try:
+                combined_dir = os.path.join(self.outdir, 'models')
+                os.makedirs(combined_dir, exist_ok=True)
+
+                combined_rows = []
+                for m, rep in model_report.items():
+                    combined_rows.append({
+                        'Model': m,
+                        'CV_Accuracy_Mean': rep['cross_val_report']['accuracy']['mean'],
+                        'CV_Precision_Mean': rep['cross_val_report']['precision']['mean'],
+                        'CV_Recall_Mean': rep['cross_val_report']['recall']['mean'],
+                        'CV_F1_Mean': rep['cross_val_report']['f1']['mean'],
+                        'CV_ROC_AUC_Mean': rep['cross_val_report']['roc_auc']['mean'],
+                        'Train_Accuracy': rep['train_report']['accuracy'],
+                        'Train_Precision': rep['train_report']['precision'],
+                        'Train_Recall': rep['train_report']['recall'],
+                        'Train_F1': rep['train_report']['f1'],
+                        'Train_ROC_AUC': rep['train_report']['roc_auc'],
+                        'Test_Accuracy': rep['test_report']['accuracy'],
+                        'Test_Precision': rep['test_report']['precision'],
+                        'Test_Recall': rep['test_report']['recall'],
+                        'Test_F1': rep['test_report']['f1'],
+                        'Test_ROC_AUC': rep['test_report']['roc_auc'],
+                    })
+
+                pd.DataFrame(combined_rows).to_csv(
+                    os.path.join(combined_dir, 'classification_summary.csv'),
+                    index=False,
+                    sep=';',
+                    encoding='utf-8-sig'
+                )
+            except Exception:
+                # Do not fail due to CSV write
+                pass
                 
             ## To get best model score from dict
             best_model_score = 0
@@ -290,7 +500,19 @@ class Classification:
                     best_model_score = score
                     best_model_name = model_name
             
-            best_model = models[best_model_name]
+            # Ensure the best_model_name key exists in the standardized 'models' dict
+            if best_model_name in models:
+                best_model = models[best_model_name]
+            else:
+                # Handle cases where model_report might have differently cased keys
+                # (though evaluate_models should be consistent)
+                standardized_best_name = next((k for k in models.keys() if k.lower() == best_model_name.lower()), None)
+                if standardized_best_name:
+                    best_model = models[standardized_best_name]
+                else:
+                    # Fallback or error
+                    raise CustomException(f"Best model '{best_model_name}' not found in trained models after standardization.", sys)
+
 
             if best_model_score < 0.1:
                 raise CustomException("No best model found", sys)
@@ -299,6 +521,18 @@ class Classification:
             if self.save_best_model:
                 save_object(f"{self.outdir}/artifacts/best_model_{best_model_name}.pkl",best_model)
             
+            # --- Return trained models if requested ---
+            if return_models:
+                trained_models_info = {}
+                for model_name, model_instance in models.items():
+                    model_path = f"{self.outdir}/artifacts/explanation_model_{model_name}.pkl"
+                    save_object(model_path, model_instance)
+                    trained_models_info[model_name] = {
+                        "model": model_instance,
+                        "model_path": model_path
+                    }
+                return trained_models_info, self.preprocessor
+
             # Update the JSON file with new model results without resetting existing content
             json_path = f"{self.outdir}/model_reports.json"            
             

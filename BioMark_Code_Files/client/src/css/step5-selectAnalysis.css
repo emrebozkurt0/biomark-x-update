@@ -9,10 +9,21 @@
 .analysis-selection{
   display: flex;
   flex-direction: column;
+  width: 100%;
+}
+/* Ensure inner content wrapper spans full width so top rows can center */
+.analysis-content-wrapper {
+  width: 100%;
 }
 
 .analysis-tables{
   display: flex;
+}
+
+/* Feature stage row spacing to align with .analysis-category margins */
+.feature-stage-row {
+  margin: 10px 40px 14px 40px;
+  
 }
 
 .analysis-category {

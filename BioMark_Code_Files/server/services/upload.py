@@ -1,20 +1,12 @@
 import os, sys
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import logging
 import json
 import time
 
 # Add modules directory to path and import helper
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from modules.utils import load_table
-
-# Logging settings
-log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
-os.makedirs(log_dir, exist_ok=True)
-log_file_path = os.path.join(log_dir, 'upload.log')
-logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from modules.logger import logging
 
 
 def load_data(data_path, outdir):
@@ -123,14 +115,11 @@ if __name__ == "__main__":
         sys.exit(1)
         
     data_path = sys.argv[1]
-    
     base_name = os.path.basename(data_path)
     file_name_without_ext = os.path.splitext(base_name)[0]
     outdir = os.path.join("results", file_name_without_ext)
 
     try:
-        df_loaded = load_data(data_path, outdir) # Changed variable name to avoid conflicts
-
         columns = get_columns(data_path)
         
         print(json.dumps(columns))

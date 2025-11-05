@@ -1,39 +1,22 @@
-# analyze.py
-
-import debugpy, logging
-import os # os module will also be used for logging
-
-# Logging settings
-log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
-os.makedirs(log_dir, exist_ok=True)
-log_file_path = os.path.join(log_dir, 'analyze.log')
-logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s - %(message)s')
-
-#logging.info("This is a test message.")
-"""
-debugpy.listen(("localhost", 5678))
-logging.info("Python debugger is waiting for connection...")
-
-debugpy.wait_for_client()
-logging.info("Debugger attached.")"""
-
 # Import required packages
 import os, sys, json, argparse
 import pandas as pd
 import numpy as np
-from tqdm.notebook import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
 import warnings
-warnings.filterwarnings('ignore')
+import debugpy
+
 
 # Add ../modules directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from modules.logger import logging
 from modules.machineLearning.classification import Classification
-from modules.differentialAnalysis.differential_analysis import DifferentiatingFactorAnalysis
+from modules.statisticalTests.statistical_tests import StatisticalTestAnalysis
+from modules.modelExplanation.model_explanation import ModelExplanationAnalysis
 from modules.dataVisualization.dimensionality_reduction import Dimensionality_Reduction
-from modules.differentialAnalysis.feature_selection import feature_rank
+from modules.feature_selection import feature_rank
 from modules.utils import load_json
 from modules.utils import load_table
 
@@ -66,15 +49,8 @@ verbose = True                 # Show detailed output during analysis
 test_size = 0.2                # Test set ratio for model training (0.2 for model and diff analysis, 0.3 for clustering)
 n_folds = 5                    # Number of cross-validation folds (5 for model and diff analysis, 3 for clustering)
 
-
-# Data loading function
-def load_data(data_path, outdir):
-    os.makedirs(outdir, exist_ok=True)
-    df = pd.read_csv(data_path)
-    return df
-
-# Differential analysis function
-def run_differential_analysis(data, selectedIllnessColumn, selectedSampleColumn, outdir, analyses):
+# Statistical Analysis Function
+def run_statistical_analysis(data, selectedIllnessColumn, selectedSampleColumn, outdir, analyses):
     print("analyses: ", analyses)
     print("type(analyses): ", type(analyses))
     print("selectedIllnessColumn: ", selectedIllnessColumn)
@@ -100,22 +76,18 @@ def run_differential_analysis(data, selectedIllnessColumn, selectedSampleColumn,
     # Check for missing values in class column
     if data[selectedIllnessColumn].isna().any():
         print(f"WARNING: Missing (NA/None) values found in column '{selectedIllnessColumn}'.")
-        # Optionally filter out rows with missing values
         data = data.dropna(subset=[selectedIllnessColumn])
         print(f"Missing values filtered. New data shape: {data.shape}")
         
     # Process analyses parameter
     if isinstance(analyses, str):
-        # If string and contains comma, split
         if ',' in analyses:
             analyses_list = analyses.split(',')
         else:
             analyses_list = [analyses]
     else:
-        # If list or other type, use as is
         analyses_list = analyses
         
-    # Clean: remove empty strings and whitespace
     analyses_list = [a.strip() for a in analyses_list if a and a.strip()]
     
     if not analyses_list:
@@ -125,30 +97,83 @@ def run_differential_analysis(data, selectedIllnessColumn, selectedSampleColumn,
     print("analyses_list:", analyses_list)
     
     try:
-        analyzer = DifferentiatingFactorAnalysis(
+        analyzer = StatisticalTestAnalysis(
             data,
             analyses=analyses_list,
             labels_column=selectedIllnessColumn,
             reference_class=reference_class,
             sample_id_column=selectedSampleColumn,
             outdir=outdir,
-            mode="classification",
             feature_type=feature_type,
-            test_size=test_size,
-            lime_global_explanation_sample_num=lime_global_explanation_sample_num,
-            shap_model_finetune = shap_model_finetune,
-            lime_model_finetune = lime_model_finetune,
-            n_folds = n_folds,
-            scoring = scoring,
             top_features_to_plot=num_top_features
         )
         analyzer.run_all_analyses()
+        
+        if hasattr(analyzer, 'categorical_encoding_info') and analyzer.categorical_encoding_info:
+            print("DEBUG: Found categorical encoding info:", analyzer.categorical_encoding_info)
+            print("CATEGORICAL_ENCODING_INFO:", json.dumps(analyzer.categorical_encoding_info))
+        else:
+            print("DEBUG: No categorical encoding info found")
+            
     except Exception as e:
         import traceback
-        print(f"ERROR: Exception occurred while running DifferentiatingFactorAnalysis: {str(e)}")
+        print(f"ERROR: Exception occurred while running StatisticalTestAnalysis: {str(e)}")
         traceback.print_exc()
 
-# Pre-visualization function
+# Model Explanation Function
+def run_model_explanation(data, selectedIllnessColumn, selectedSampleColumn, outdir, model_list, explanationAnalyzes):
+    """Train classification model(s) to get trained models and run explanation methods."""
+    # Train only to obtain models for explanation
+    print("Running classification to get model for explanation.....\n")
+    clf = Classification(
+        data=data.drop(columns=selectedSampleColumn),
+        labels_column=selectedIllnessColumn,
+        n_folds=n_folds, test_size=test_size,
+        outdir=os.path.join(outdir, "explanation_models"),
+        param_finetune=param_finetune, finetune_fraction=finetune_fraction,
+        save_best_model=True, standard_scaling=standard_scaling,
+        save_data_transformer=True, save_label_encoder=True,
+        model_list=model_list,
+        verbose=False,
+        scoring=scoring,
+        num_top_features=num_top_features,
+        use_preprocessing=False
+    )
+    clf.data_transfrom()
+    # Emit categorical encoding info for frontend modal if available
+    try:
+        if hasattr(clf, 'categorical_encoding_info') and clf.categorical_encoding_info:
+            print("CATEGORICAL_ENCODING_INFO:", json.dumps(clf.categorical_encoding_info))
+    except Exception:
+        pass
+    trained_models_info, preprocessor = clf.initiate_model_trainer(return_models=True)
+    print("\nRunning EXPLANATION methods.....\n")
+    explanation_runner = ModelExplanationAnalysis(
+        X_data = clf.X,  # <-- Hazır remapped X verisi
+        y_data = clf.y,  # <-- Hazır encoded y verisi
+        class_names = clf.class_names, # <-- Hazır sınıf isimleri
+        feature_map_reverse = clf.feature_map_reverse, # <-- Doğru harita
+        analyses=explanationAnalyzes,
+        labels_column=selectedIllnessColumn,
+        sample_id_column=selectedSampleColumn,
+        outdir=outdir,
+        feature_type=feature_type,
+        test_size=test_size,
+        lime_global_explanation_sample_num=lime_global_explanation_sample_num,
+        shap_model_finetune=shap_model_finetune,
+        lime_model_finetune=lime_model_finetune,
+        n_folds=n_folds,
+        scoring=scoring,
+        top_features_to_plot=num_top_features,
+        feature_importance_finetune=feature_importance_finetune,
+        trained_models_info=trained_models_info,
+        preprocessor=preprocessor,
+        X_test=clf.X_test_raw,
+        y_test=clf.y_test
+    )
+    explanation_runner.run_all_analyses()
+
+# Initial Visualization Function
 def initial_visualization(data, visualizations, outdir, selectedSampleColumn, selectedIllnessColumn):
     print("visualizations: ", visualizations)
     if visualizations and visualizations != ['']:
@@ -157,8 +182,15 @@ def initial_visualization(data, visualizations, outdir, selectedSampleColumn, se
                                                 plotter=plotter,
                                                 outdir=os.path.join(outdir, "initial"))
         dim_visualizer.runPlots(runs=visualizations)
+        
+        # Return categorical encoding information for frontend
+        if hasattr(dim_visualizer, 'categorical_encoding_info') and dim_visualizer.categorical_encoding_info:
+            print("DEBUG: Found categorical encoding info in visualization:", dim_visualizer.categorical_encoding_info)
+            print("CATEGORICAL_ENCODING_INFO:", json.dumps(dim_visualizer.categorical_encoding_info))
+        else:
+            print("DEBUG: No categorical encoding info found in visualization")
 
-# Pre-model training function
+# Initial Model Training Function
 def initial_model_training(data, selectedIllnessColumn, selectedSampleColumn, outdir, model_list):
     print("model_list: ", model_list)
     if model_list and model_list != ['']:
@@ -175,12 +207,21 @@ def initial_model_training(data, selectedIllnessColumn, selectedSampleColumn, ou
             save_data_transformer = save_data_transformer,
             save_label_encoder = save_label_encoder,            
             model_list=model_list,
-            verbose=verbose
+            verbose=verbose,
+            scoring=scoring,
+            num_top_features=num_top_features,
+            use_preprocessing=False
         )
         clf.data_transfrom()
+        # Emit categorical encoding info for frontend modal if available
+        try:
+            if hasattr(clf, 'categorical_encoding_info') and clf.categorical_encoding_info:
+                print("CATEGORICAL_ENCODING_INFO:", json.dumps(clf.categorical_encoding_info))
+        except Exception:
+            pass
         clf.initiate_model_trainer()
 
-# Feature selection function (class-pair aware)
+# Feature Selection Function (class-pair aware)
 def feature_selection(outdir, class_pair: str):
     """Return top ranked features for the given class pair if available.
 
@@ -226,7 +267,7 @@ def feature_selection(outdir, class_pair: str):
 
     return top_n
 
-# Post-feature selection visualization function
+# After Feature Selection Visualization Function
 def visualization_after_feature_selection(data, visualizations, outdir, selectedIllnessColumn):
     if(visualizations != ['']):
         dim_visualizer = Dimensionality_Reduction(data,
@@ -235,9 +276,9 @@ def visualization_after_feature_selection(data, visualizations, outdir, selected
                                                 outdir=os.path.join(outdir, "AfterFeatureSelection"))
         dim_visualizer.runPlots(runs=visualizations)
 
-# Post-feature selection model training function
-def model_training_after_feature_selection(data, selectedIllnessColumn, outdir):
-    if classificationAnalyzes != ['']:
+# After Feature Selection Model Training Function
+def model_training_after_feature_selection(data, selectedIllnessColumn, outdir, model_list):
+    if model_list and model_list != ['']:
         clf = Classification(
             data=data,
             labels_column=selectedIllnessColumn,
@@ -251,7 +292,9 @@ def model_training_after_feature_selection(data, selectedIllnessColumn, outdir):
             save_data_transformer = save_data_transformer,
             save_label_encoder = save_label_encoder,
             model_list=model_list,
-            verbose=verbose
+            verbose=verbose,
+            num_top_features=num_top_features,
+            use_preprocessing=False
         )
         clf.data_transfrom()
         clf.initiate_model_trainer()
@@ -267,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument('differentialAnalyzes', help='Differential analysis methods')
     parser.add_argument('clusteringAnalyzes', help='Clustering analysis methods')
     parser.add_argument('classificationAnalyzes', help='Classification analysis methods')
+    parser.add_argument('explanationAnalyzes', help='Explanation analysis methods')
     parser.add_argument('nonFeatureColumns', help='Non-feature columns')
     parser.add_argument('isDiffAnalysis', help='Whether to perform differential analysis')
     parser.add_argument('afterFeatureSelection', help='Whether to perform analysis after feature selection')
@@ -279,9 +323,28 @@ if __name__ == "__main__":
     selectedIllnessColumn = args.selectedIllnessColumn
     selectedSampleColumn = args.selectedSampleColumn
     selectedClasseses = [cls for cls in args.selectedClasseses.split(',')] if args.selectedClasseses else []
-    print("selectedClasseses: ", selectedClasseses)
-    print("type(selectedClasseses): ", type(selectedClasseses))
-    differentialAnalyzes = args.differentialAnalyzes.lower().replace('-', '_') if args.differentialAnalyzes else ''    
+    
+    # Process analysis arguments safely
+    def process_arg(arg):
+        if not arg:
+            return []
+        # Standardize format and split
+        return [item.strip() for item in arg.lower().replace('-', '_').split(",") if item.strip()]
+
+    statistical_tests = process_arg(args.differentialAnalyzes)  # legacy arg name, now statistical tests
+    dimensionality_reduction = process_arg(args.clusteringAnalyzes)
+    classification_methods = process_arg(args.classificationAnalyzes)
+    explanation_methods = process_arg(args.explanationAnalyzes)
+    nonFeatureColumns = process_arg(args.nonFeatureColumns)
+    selected_diff_analyses = process_arg(args.isDiffAnalysis)
+    afterFeatureSelection = args.afterFeatureSelection.lower() == 'true'
+
+    # Ensure explanation methods are not run twice if they are also in the statistical list
+    if explanation_methods:
+        statistical_tests = [item for item in statistical_tests if item not in explanation_methods]
+        # Also remove from selected_diff_analyses to prevent double runs from older logic paths
+        selected_diff_analyses = [item for item in selected_diff_analyses if item not in explanation_methods]
+
     # Load parameter settings in JSON format
     params_json = {}
     if args.params and args.params != '{}':
@@ -296,11 +359,11 @@ if __name__ == "__main__":
             print(f"Error parsing parameter JSON: {e}")
     
     # Add dim variable to clusteringAnalyzes argument (e.g., 2d_ or 3d_)
-    if args.clusteringAnalyzes:
-        dim_prefix = dim.lower() + "_" if dim else ""  # Convert dim to lowercase and add _
-        clusteringAnalyzes = dim_prefix + args.clusteringAnalyzes.lower()
+    if dimensionality_reduction:
+        dim_prefix = dim.lower() + "_" if dim else ""
+        dimensionality_reduction = [dim_prefix + analysis for analysis in dimensionality_reduction]
     else:
-        clusteringAnalyzes = ''
+        dimensionality_reduction = []
     
     # Update other parameters
     if params_json:
@@ -343,41 +406,33 @@ if __name__ == "__main__":
                 globals()["save_label_encoder"] = params_json["save_label_encoder"]
             if "verbose" in params_json:
                 globals()["verbose"] = params_json["verbose"]
+            if "use_preprocessing" in params_json:
+                globals()["use_preprocessing"] = params_json["use_preprocessing"]
             
             # Update Common Parameters
             if "test_size" in params_json:
                 globals()["test_size"] = params_json["test_size"]
             if "n_folds" in params_json:
                 globals()["n_folds"] = params_json["n_folds"]
+            # Aggregation parameters moved to final results combine step (no env injection here)
                 
         except Exception as e:
             print(f"Error loading parameter settings: {e}")
     
-    classificationAnalyzes = args.classificationAnalyzes if args.classificationAnalyzes else ''
-    
-    # Keep nonFeatureColumns as a normal string, will convert to uppercase during dataframe processing
-    nonFeatureColumns = args.nonFeatureColumns.split(',') if args.nonFeatureColumns else []
-    
-    isDiffAnalysis = [item.lower() for item in args.isDiffAnalysis.split(',')] if args.isDiffAnalysis else []
-    afterFeatureSelection = args.afterFeatureSelection.lower() == 'true' if args.afterFeatureSelection else False
-
-    differentialAnalyzes = [item.strip() for item in differentialAnalyzes.split(",")]
-    classificationAnalyzes = [item.strip() for item in classificationAnalyzes.split(",")]
-    clusteringAnalyzes = [item.strip() for item in clusteringAnalyzes.split(",")]
-
     # Print parameters
-    print("Data Path:", data_path)
+    """ print("Data Path:", data_path)
     print("Selected Illness Column:", selectedIllnessColumn)
     print("Selected Sample Column:", selectedSampleColumn)
     print("Selected Classes:", selectedClasseses)
-    print("Differential Analyzes:", differentialAnalyzes)
-    print("Clustering Analyzes:", clusteringAnalyzes)
-    print("Classification Analyzes:", classificationAnalyzes)
+    print("Statistical Tests:", statistical_tests)
+    print("Dimensionality Reduction:", dimensionality_reduction)
+    print("Classification Analyses:", classification_methods)
+    print("Model Explanation:", explanation_methods)
     print("Non-Feature Columns:", nonFeatureColumns)
-    print("Is Differential Analysis:", isDiffAnalysis)
-    print("After Feature Selection:", afterFeatureSelection)
+    print("Selected Differential Analyses:", selected_diff_analyses)
+    print("After Feature Selection:", afterFeatureSelection) """
     
-    # Print parameter settings
+    """ # Print parameter settings
     print("\nParameter Settings:")
     print(f"feature_type: {feature_type}")
     print(f"lime_global_explanation_sample_num: {lime_global_explanation_sample_num}")
@@ -396,17 +451,25 @@ if __name__ == "__main__":
     print(f"save_label_encoder: {save_label_encoder}")
     print(f"verbose: {verbose}")
     print(f"test_size: {test_size}")
-    print(f"n_folds: {n_folds}")
+    print(f"n_folds: {n_folds}") """
 
     # Set analyses parameters
-    analyses = differentialAnalyzes
-    model_list = classificationAnalyzes
-    visualizations = clusteringAnalyzes
+    # Map parsed args to variables used below
+    analyses = statistical_tests
+    model_list = classification_methods
+    visualizations = dimensionality_reduction
 
     # Output directory
     base_name = os.path.basename(data_path)
     file_name_without_ext = os.path.splitext(base_name)[0]
     outdir = os.path.join("results", file_name_without_ext)
+    
+    # Create a unique path for this class pair analysis
+    class_pair_key = f"{selectedClasseses[0]}_{selectedClasseses[1]}" if len(selectedClasseses) >= 2 else "all_classes"
+    RESULTS_PATH = os.path.join(outdir, class_pair_key)
+    FEATURE_RANKING_PATH = os.path.join(outdir, "feature_ranking", class_pair_key)
+    os.makedirs(RESULTS_PATH, exist_ok=True)
+    os.makedirs(FEATURE_RANKING_PATH, exist_ok=True)
 
     # Load data
     df = load_table(data_path)
@@ -432,47 +495,91 @@ if __name__ == "__main__":
     
     # Drop matching columns from dataframe
     data = df.drop(columns=valid_columns).reset_index(drop=True)
+
+    # If `afterFeatureSelection` is true, we need to perform feature selection now.
+    if afterFeatureSelection:
+        print("\n--- Performing Feature Selection ---")
+        
+        # We need the class pair to find the correct ranked features file.
+        if len(selectedClasseses) >= 2:
+            class_pair_key = f"{selectedClasseses[0]}_{selectedClasseses[1]}"
+            
+            # This function loads feature_importances.json, ranks them using feature_rank,
+            # and returns the top N features.
+            top_features = feature_selection(outdir, class_pair=class_pair_key)
+            
+            if top_features:
+                print(f"Top {len(top_features)} features selected for class pair '{class_pair_key}'.")
+                
+                # The columns to keep are the selected features plus the essential metadata columns.
+                columns_to_keep = top_features + [selectedIllnessColumn, selectedSampleColumn]
+                
+                # Filter the dataframe to keep only these columns.
+                # Ensure we only select columns that actually exist in the dataframe to prevent errors.
+                existing_columns_to_keep = [col for col in columns_to_keep if col in data.columns]
+                data = data[existing_columns_to_keep]
+                
+                print("Data shape after feature selection:", data.shape)
+            else:
+                print(f"Warning: No top features found for class pair '{class_pair_key}'. Proceeding with all features.")
+        else:
+            print("Warning: At least two classes are required for feature selection. Proceeding with all features.")
+
+    # Run statistical analysis
+    if analyses:
+        print("\nrun_statistical_analysis function for STATISTICAL TESTS.....\n")
+        run_statistical_analysis(data, selectedIllnessColumn, selectedSampleColumn, RESULTS_PATH, analyses)
     
-    # Run differential analysis
-    if analyses and analyses != ['']:
-        print("\nrun_differential_analysis function.....\n")
-        run_differential_analysis(data, selectedIllnessColumn, selectedSampleColumn, outdir, analyses)
-    
-    # Initial visualization
-    if visualizations and visualizations != ['']:
-        print("initial_visualization function.....\n")
-        initial_visualization(data, visualizations, outdir, selectedSampleColumn, selectedIllnessColumn)
-    
-    # Initial model training
-    if model_list and model_list != ['']:
-        print("initial_model_training function.....\n")
-        initial_model_training(data, selectedIllnessColumn, selectedSampleColumn, outdir, model_list)
-
-# -------------------------------------------------------------------------
-#  AFTER FEATURE SELECTION WORKFLOW (only if diff. analysis for this pair)
-# -------------------------------------------------------------------------
-
-    # Determine if differential analysis results exist for the current class pair
-    class_pair_key = f"{selectedClasseses[0]}_{selectedClasseses[1]}" if len(selectedClasseses) >= 2 else ""
-
-    top_n = None
-    feature_importances_file_path = os.path.join(outdir, "feature_importances.json")
-    if os.path.exists(feature_importances_file_path) and class_pair_key:
-        print("feature_selection function.....\n")
-        top_n = feature_selection(outdir, class_pair_key)
-
-    if top_n:
-        # Use only the selected top features
-        data_fs = data[[selectedIllnessColumn] + top_n]
-
-        # Post-feature selection visualization
-        if visualizations and visualizations != ['']:
+    # Visualization (branch by afterFeatureSelection)
+    if visualizations:
+        if afterFeatureSelection:
             print("visualization_after_feature_selection function.....\n")
-            visualization_after_feature_selection(data_fs, visualizations, outdir, selectedIllnessColumn)
-
-        # Post-feature selection model training
-        if model_list and model_list != ['']:
-            print("model_training_after_feature_selection function.....\n")
-            model_training_after_feature_selection(data_fs, selectedIllnessColumn, outdir)
+            visualization_after_feature_selection(
+                data.drop(columns=selectedSampleColumn),
+                visualizations,
+                RESULTS_PATH,
+                selectedIllnessColumn
+            )
+        else:
+            print("initial_visualization function.....\n")
+            initial_visualization(
+                data,
+                visualizations,
+                RESULTS_PATH,
+                selectedSampleColumn,
+                selectedIllnessColumn
+            )
     
+    # Handle Classification and Explanation
+    if model_list:
+        if explanation_methods:
+            run_model_explanation(
+                data=data,
+                selectedIllnessColumn=selectedIllnessColumn,
+                selectedSampleColumn=selectedSampleColumn,
+                outdir=RESULTS_PATH,
+                model_list=model_list,
+                explanationAnalyzes=explanation_methods
+            )
+
+        else:
+            # Run classification (branch by afterFeatureSelection)
+            if afterFeatureSelection:
+                print("model_training_after_feature_selection function for CLASSIFICATION.....\n")
+                model_training_after_feature_selection(
+                    data.drop(columns=selectedSampleColumn),
+                    selectedIllnessColumn,
+                    RESULTS_PATH,
+                    model_list
+                )
+            else:
+                print("initial_model_training function for CLASSIFICATION.....\n")
+                initial_model_training(
+                    data,
+                    selectedIllnessColumn,
+                    selectedSampleColumn,
+                    RESULTS_PATH,
+                    model_list
+                )
+
     exit()
