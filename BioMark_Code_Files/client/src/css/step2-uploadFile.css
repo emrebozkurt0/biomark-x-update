@@ -28,18 +28,37 @@
 }
 
 .upload-button {
-    background-color: #cfcfcf;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     margin-top: 20px;
-    padding: 10px 20px;
-    border-radius: 5px;
-    width: 25%;
-    border: 1px solid #ccc;
+    padding: 12px 28px;
+    border-radius: 6px;
+    min-width: 190px;
+    background-color: #2f4fb5;
+    color: #fff;
+    border: none;
     cursor: pointer;
-    font-size: 16px;
+    font-size: 17px;
+    font-weight: 600;
+    box-shadow: 0 4px 10px rgba(47, 79, 181, 0.25);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
-    
+
 .upload-button:hover {
-    background-color: #0033b4;
+    background-color: #253f92;
+    box-shadow: 0 6px 14px rgba(47, 79, 181, 0.3);
+    transform: translateY(-1px);
+    color: #fff;
+}
+
+.upload-button:disabled {
+    background-color: #d6dcf5;
+    color: #7a86b6;
+    cursor: not-allowed;
+    box-shadow: none;
+    transform: none;
 }
 
 /* Style for other loading state */

@@ -248,6 +248,97 @@ app.post('/upload', upload.single('file'), (req, res) => {
     });
 });
 
+app.post('/merge-files', async (req, res) => {
+    const { chosenColumns } = req.body;
+
+    if (!chosenColumns || !Array.isArray(chosenColumns) || chosenColumns.length < 2) {
+        return res.status(400).json({ success: false, error: 'Provide at least two files.' });
+    }
+
+    const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+    const scriptPath = path.join(__dirname, 'services', 'merge.py');
+
+    // Send chosenColumns as a single JSON argument
+    const pythonArgs = [
+        '-Xfrozen_modules=off',
+        scriptPath,
+        JSON.stringify(chosenColumns)
+    ];
+
+    console.log("Running Python command:", pythonCommand, pythonArgs.join(" "));
+
+    const python = spawn(pythonCommand, pythonArgs);
+    let stdout = '', stderr = '';
+
+    python.stdout.on('data', data => stdout += data.toString());
+    python.stderr.on('data', data => stderr += data.toString());
+
+    python.on('close', code => {
+        if (code === 0) {
+            try {
+                const parsed = JSON.parse(stdout.trim());
+                const mergedFilePath = parsed.mergedFilePath;
+                const mergedUploadId = parsed.uploadId;
+
+                if (!mergedFilePath || !mergedUploadId) {
+                    return res.status(500).json({ success: false, error: 'Merged file details are incomplete' });
+                }
+
+                // Persist merged artifact so ownership checks succeed
+                try {
+                    db.prepare('INSERT INTO uploads (id, session_id, original_name, server_path) VALUES (?,?,?,?)')
+                      .run(mergedUploadId, req.sessionId, parsed.mergedFileName || 'Merged Dataset', mergedFilePath);
+                } catch (dbErr) {
+                    console.error('Failed to insert merged upload record:', dbErr);
+                }
+
+                // Build a friendly name and size information using metadata when available
+                let displayName = parsed.mergedFileName || 'Merged Dataset';
+                let sizeBytes = typeof parsed.sizeBytes === 'number' ? parsed.sizeBytes : 0;
+
+                try {
+                    if (parsed.metadataPath && fs.existsSync(parsed.metadataPath)) {
+                        const metadata = JSON.parse(fs.readFileSync(parsed.metadataPath, 'utf8'));
+                        const sourceFiles = Object.keys(metadata.input_files || {});
+                        if (sourceFiles.length > 0) {
+                            displayName = `Merged Files (${sourceFiles.join(', ')})`;
+                        }
+                        if (typeof metadata.size_bytes === 'number') {
+                            sizeBytes = metadata.size_bytes;
+                        }
+                    }
+                } catch (err) {
+                    console.error('Error reading merge metadata:', err);
+                }
+
+                if (sizeBytes === 0 && fs.existsSync(mergedFilePath)) {
+                    try {
+                        sizeBytes = fs.statSync(mergedFilePath).size;
+                    } catch (statErr) {
+                        console.error('Failed to stat merged file:', statErr);
+                    }
+                }
+
+                return res.json({
+                    success: true,
+                    mergedFilePath,
+                    mergedFileName: displayName,
+                    size: sizeBytes,
+                    metadataPath: parsed.metadataPath,
+                    columns: parsed.columns,
+                    uploadId: mergedUploadId
+                });
+            } catch (err) {
+                console.error(err);
+                return res.status(500).json({ success: false, error: 'Failed to parse merged file info' });
+            }
+        } else {
+            console.error(stderr);
+            return res.status(500).json({ success: false, error: 'Merge failed', details: stderr });
+        }
+    });
+});
+
 // step3 - Get all columns
 app.post('/get_all_columns', (req, res) => {
     console.log("At get all columns endpoint.");

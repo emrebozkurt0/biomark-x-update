@@ -5,6 +5,71 @@ import { buildUrl } from '../api';
 import HelpTooltip from './common/HelpTooltip';
 import { helpTexts } from '../content/helpTexts';
 
+const TYPE_LABELS = {
+  differential: 'Differential Analyses',
+  clustering: 'Clustering Analyses',
+  classification: 'Classification Models',
+  statisticalTest: 'Statistical Tests',
+  dimensionalityReduction: 'Dimensionality Reduction',
+  classificationAnalysis: 'Classification Analyses',
+  modelExplanation: 'Model Explanations'
+};
+
+const normalizeTypeItems = (value) => {
+  if (value == null) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (item == null) return '';
+        if (typeof item === 'string') return item.trim();
+        if (typeof item === 'object') {
+          const nested = normalizeTypeItems(Object.values(item));
+          return nested.join(', ').trim();
+        }
+        if (typeof item === 'boolean') return item ? 'Yes' : 'No';
+        return String(item).trim();
+      })
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (typeof value === 'boolean') {
+    return [value ? 'Yes' : 'No'];
+  }
+  if (typeof value === 'object') {
+    const nestedEntries = [];
+    Object.entries(value).forEach(([key, nestedValue]) => {
+      const items = normalizeTypeItems(nestedValue);
+      if (items.length > 0) {
+        nestedEntries.push(`${key}: ${items.join(', ')}`);
+      }
+    });
+    return nestedEntries;
+  }
+  return [String(value).trim()].filter(Boolean);
+};
+
+const getAnalysisTypeEntries = (typesObj) => {
+  if (!typesObj || typeof typesObj !== 'object') return [];
+  const entries = [];
+
+  Object.entries(typesObj).forEach(([key, value]) => {
+    const items = normalizeTypeItems(value);
+    if (items.length === 0) return;
+    const label = TYPE_LABELS[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
+    entries.push(`${label}: ${items.join(', ')}`);
+  });
+
+  return entries;
+};
+
+const summarizeAnalysisTypes = (typesObj) => {
+  const entries = getAnalysisTypeEntries(typesObj);
+  return entries.length > 0 ? entries.join('; ') : 'N/A';
+};
+
 /**
  * Component for generating biomarker analysis report
  *
@@ -36,12 +101,27 @@ const AnalysisReport = ({
   // selectedClassPair, // already comes from summarizeAnalyses
   summaryImagePath, // This prop is related to summarizeAnalyses and its structure is preserved
   summarizeAnalyses, // This prop's structure is good and preserved
-  datasetFileName // Name of the file used in the analysis
+  datasetFileName // Name(s) of the file(s) used in the analysis (string or string[])
 }) => {
   // State for loading overlay
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [logoDataUrl, setLogoDataUrl] = useState(null);
+
+  const datasetNameList = useMemo(() => {
+    if (Array.isArray(datasetFileName)) {
+      return datasetFileName.filter(name => typeof name === 'string' && name.trim().length > 0);
+    }
+    if (typeof datasetFileName === 'string' && datasetFileName.trim().length > 0) {
+      return [datasetFileName.trim()];
+    }
+    return [];
+  }, [datasetFileName]);
+
+  const datasetNamesDisplay = datasetNameList.join(', ');
+  const datasetSlug = datasetNameList.length > 0
+    ? datasetNameList.join('_').replace(/[\s,]+/g, '_').replace(/[^A-Za-z0-9_-]/g, '')
+    : 'Unknown_File';
 
   // Group analyses by class pairs
   const groupedAnalyses = useMemo(() => {
@@ -225,12 +305,14 @@ const AnalysisReport = ({
       const lineHeight = 6;
 
       // Dataset filename info
-      if (datasetFileName) {
+      if (datasetNameList.length > 0) {
         pdf.setFont('helvetica', 'bold');
-        pdf.text('Dataset Filename:', leftColumnX, yPosition);
+        pdf.text(datasetNameList.length > 1 ? 'Dataset Files:' : 'Dataset Filename:', leftColumnX, yPosition);
         pdf.setFont('helvetica', 'normal');
-        pdf.text(datasetFileName, leftColumnX + 40, yPosition);
-        yPosition += lineHeight + 5;
+        const maxLineWidth = contentWidth - 40;
+        const lines = pdf.splitTextToSize(datasetNamesDisplay, maxLineWidth);
+        pdf.text(lines, leftColumnX + 40, yPosition);
+        yPosition += lineHeight * lines.length + 5;
       }
 
       if (Object.keys(groupedAnalyses).length > 0) {
@@ -275,17 +357,7 @@ const AnalysisReport = ({
             pdf.setFont('helvetica', 'bold');
             pdf.text('Analysis Types:', leftColumnX + 10, yPosition);
             pdf.setFont('helvetica', 'normal');
-            let analysisTypesText = 'N/A';
-            if (analysis.types && typeof analysis.types === 'object') {
-              const types = [];
-              if (analysis.types.differential && analysis.types.differential.length) 
-                types.push('Differential: ' + analysis.types.differential.join(', '));
-              if (analysis.types.clustering && analysis.types.clustering.length) 
-                types.push('Clustering: ' + analysis.types.clustering.join(', '));
-              if (analysis.types.classification && analysis.types.classification.length) 
-                types.push('Classification: ' + analysis.types.classification.join(', '));
-              analysisTypesText = types.length ? types.join('; ') : 'N/A';
-            }
+            const analysisTypesText = summarizeAnalysisTypes(analysis.types);
             const splitTypes = pdf.splitTextToSize(analysisTypesText, contentWidth - 30);
             pdf.text(splitTypes, leftColumnX + 40, yPosition);
             yPosition += lineHeight * splitTypes.length;
@@ -552,7 +624,7 @@ const AnalysisReport = ({
       pdf.text(`This report was automatically generated by Biomarker Analysis Tool v${version} on ${currentDate}`, pageWidth / 2, yPosition, { align: 'center' });
       
       // Save PDF
-      pdf.save(`Biomarker_Analysis_Report_${new Date().toISOString().split('T')[0]}_${datasetFileName}.pdf`);
+  pdf.save(`Biomarker_Analysis_Report_${new Date().toISOString().split('T')[0]}_${datasetSlug}.pdf`);
       
       setProgress(100);
       
@@ -580,7 +652,7 @@ const AnalysisReport = ({
           title="Generate a professional PDF report of your analysis results"
           disabled={loading}
         >
-          <i className="report-icon">{loading ? '⏳' : '📊'}</i>
+          <i className="report-icon">{loading ? '➳' : '📊'}</i>
           {loading ? 'Generating Report...' : 'Generate Analysis Report'}
         </button>
       </div>
@@ -619,10 +691,10 @@ const AnalysisReport = ({
           {/* Analysis Summary */}
           <div className="report-section">
             <h3>1. Analysis Summary</h3>
-            {datasetFileName && (
+            {datasetNameList.length > 0 && (
               <div className="info-row">
-                <span className="label">Dataset Filename:</span>
-                <span className="value">{datasetFileName}</span>
+                <span className="label">{datasetNameList.length > 1 ? 'Dataset Files:' : 'Dataset Filename:'}</span>
+                <span className="value">{datasetNamesDisplay}</span>
               </div>
             )}
             {Object.keys(groupedAnalyses).length > 0 ? (
@@ -638,21 +710,7 @@ const AnalysisReport = ({
                       </div>
                       <div className="info-row">
                         <span className="label">Analysis Types:</span>
-                        <span className="value">
-                          {(() => {
-                            if (analysis.types && typeof analysis.types === 'object') {
-                              const types = [];
-                              if (analysis.types.differential?.length) 
-                                types.push('Differential: ' + analysis.types.differential.join(', '));
-                              if (analysis.types.clustering?.length) 
-                                types.push('Clustering: ' + analysis.types.clustering.join(', '));
-                              if (analysis.types.classification?.length) 
-                                types.push('Classification: ' + analysis.types.classification.join(', '));
-                              return types.length ? types.join('; ') : 'N/A';
-                            }
-                            return 'N/A';
-                          })()}
-                        </span>
+                        <span className="value">{summarizeAnalysisTypes(analysis.types)}</span>
                       </div>
                       <div className="info-row">
                         <span className="label">Execution Time:</span>
