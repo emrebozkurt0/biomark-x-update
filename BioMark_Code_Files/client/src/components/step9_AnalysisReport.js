@@ -2,8 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import jsPDF from 'jspdf';
 import '../css/step9-generateAnalysisReport.css';
 import { buildUrl } from '../api';
-import HelpTooltip from './common/HelpTooltip';
-import { helpTexts } from '../content/helpTexts';
+import { buildKeggColumns, KEGG_PREVIEW_LIMIT, sanitizeKeggCell } from '../utils/keggTable';
 
 const TYPE_LABELS = {
   differential: 'Differential Analyses',
@@ -101,7 +100,8 @@ const AnalysisReport = ({
   // selectedClassPair, // already comes from summarizeAnalyses
   summaryImagePath, // This prop is related to summarizeAnalyses and its structure is preserved
   summarizeAnalyses, // This prop's structure is good and preserved
-  datasetFileName // Name(s) of the file(s) used in the analysis (string or string[])
+  datasetFileName, // Name(s) of the file(s) used in the analysis (string or string[])
+  keggAnalyses = []
 }) => {
   // State for loading overlay
   const [loading, setLoading] = useState(false);
@@ -136,6 +136,12 @@ const AnalysisReport = ({
       return acc;
     }, {});
   }, [analysisResults]);
+
+  const hasSummariesSection = Array.isArray(summarizeAnalyses) && summarizeAnalyses.length > 0;
+  const hasKeggAnalyses = Array.isArray(keggAnalyses) && keggAnalyses.length > 0;
+  const statisticalSectionNumber = hasSummariesSection ? 2 : null;
+  const keggSectionNumber = hasKeggAnalyses ? (hasSummariesSection ? 3 : 2) : null;
+  const analysisResultsSectionNumber = 1 + (hasSummariesSection ? 1 : 0) + (hasKeggAnalyses ? 1 : 0) + 1;
   
   // Load logo as DataURL for PDF
   useEffect(() => {
@@ -205,7 +211,9 @@ const AnalysisReport = ({
       // 30mm space for logo and title
       const topMargin = 40;
       
-      let yPosition = topMargin;
+    let yPosition = topMargin;
+    let sectionNumber = 2;
+    const baseLineHeight = 6;
       
       // ----- COVER TITLE -----
       
@@ -302,7 +310,7 @@ const AnalysisReport = ({
       pdf.setTextColor(80, 80, 80);
       
       const leftColumnX = marginLeft;
-      const lineHeight = 6;
+      const lineHeight = baseLineHeight;
 
       // Dataset filename info
       if (datasetNameList.length > 0) {
@@ -387,12 +395,16 @@ const AnalysisReport = ({
       yPosition += 10;
 
       // ----- STATISTICAL ANALYSIS RESULTS -----
-      if (summarizeAnalyses && summarizeAnalyses.length > 0) {
+      if (hasSummariesSection) {
+        if (yPosition > pageHeight - 40) {
+          pdf.addPage();
+          yPosition = topMargin - 20;
+        }
         // Section title
         pdf.setFontSize(16);
         pdf.setTextColor(60, 60, 60);
         pdf.setFont('helvetica', 'bold');
-        pdf.text('2. Statistical Method Results', marginLeft, yPosition);
+        pdf.text(`${sectionNumber}. Statistical Method Results`, marginLeft, yPosition);
         yPosition += 10;
         
         // Bottom line
@@ -465,8 +477,248 @@ const AnalysisReport = ({
           }
           yPosition += 10;
         }
+
+        sectionNumber += 1;
       }
       
+      // ----- KEGG PATHWAY ANALYSIS -----
+      if (hasKeggAnalyses) {
+        if (yPosition > pageHeight - 40) {
+          pdf.addPage();
+          yPosition = topMargin - 20;
+        }
+
+        pdf.setFontSize(16);
+        pdf.setTextColor(60, 60, 60);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(`${sectionNumber}. KEGG Pathway Analysis`, marginLeft, yPosition);
+        yPosition += 10;
+
+        pdf.setDrawColor(74, 109, 167);
+        pdf.setLineWidth(0.5);
+        pdf.line(marginLeft, yPosition, marginLeft + 80, yPosition);
+        yPosition += 15;
+
+        pdf.setFontSize(10);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setTextColor(80, 80, 80);
+
+        const tableBorderColor = { r: 215, g: 226, b: 255 };
+        const tableHeaderFill = { r: 234, g: 240, b: 255 };
+        const tableStripeFill = { r: 244, g: 247, b: 255 };
+        const tableTextColor = { r: 43, g: 54, b: 90 };
+        const tablePaddingX = 2;
+        const tablePaddingY = 1.8;
+        const tableRowLineHeight = 4.2;
+        const tableHeaderHeight = lineHeight + 2;
+        const columnWeightMap = {
+          '#': 0.07,
+          Pathway: 0.26,
+          Overlap: 0.1,
+          'Adjusted p-value': 0.14,
+          'Raw p-value': 0.14,
+          'Odds ratio': 0.11,
+          Genes: 0.18
+        };
+
+        const drawKeggTable = (headers, rows) => {
+          if (!Array.isArray(headers) || headers.length === 0 || !Array.isArray(rows) || rows.length === 0) {
+            return false;
+          }
+
+          const columnCount = headers.length;
+          const defaultWeight = 1 / columnCount;
+          const weights = headers.map((header) => columnWeightMap[header] ?? defaultWeight);
+          const totalWeight = weights.reduce((sum, w) => sum + w, 0) || 1;
+          const columnWidths = weights.map((weight, idx) => {
+            if (idx === columnCount - 1) {
+              const allocated = weights.slice(0, idx).reduce((sum, w) => sum + w, 0);
+              return contentWidth - (allocated / totalWeight) * contentWidth;
+            }
+            return (weight / totalWeight) * contentWidth;
+          });
+          const columnOffsets = headers.map((_, idx) => {
+            if (idx === 0) return marginLeft;
+            const widthSum = columnWidths.slice(0, idx).reduce((sum, width) => sum + width, 0);
+            return marginLeft + widthSum;
+          });
+
+          const headerLineSets = headers.map((header, colIdx) => {
+            const cellWidth = Math.max(columnWidths[colIdx] - tablePaddingX * 2, 10);
+            const lines = pdf.splitTextToSize(sanitizeKeggCell(header) || 'Unnamed', cellWidth);
+            return lines.length > 0 ? lines : [''];
+          });
+          const headerRowHeight = Math.max(
+            tableHeaderHeight,
+            Math.max(...headerLineSets.map((lines) => Math.max(lines.length, 1))) * tableRowLineHeight + tablePaddingY * 2
+          );
+
+          const renderHeader = () => {
+            if (yPosition > pageHeight - 30) {
+              pdf.addPage();
+              yPosition = topMargin - 20;
+            }
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(10);
+            pdf.setTextColor(tableTextColor.r, tableTextColor.g, tableTextColor.b);
+            headers.forEach((header, colIdx) => {
+              const cellX = columnOffsets[colIdx];
+              const cellWidth = columnWidths[colIdx];
+              pdf.setDrawColor(tableBorderColor.r, tableBorderColor.g, tableBorderColor.b);
+              pdf.setFillColor(tableHeaderFill.r, tableHeaderFill.g, tableHeaderFill.b);
+              pdf.rect(cellX, yPosition, cellWidth, headerRowHeight, 'FD');
+              const headerLines = headerLineSets[colIdx];
+              headerLines.forEach((line, lineIdx) => {
+                pdf.text(line, cellX + tablePaddingX, yPosition + tablePaddingY + tableRowLineHeight * (lineIdx + 0.7));
+              });
+            });
+            yPosition += headerRowHeight;
+          };
+
+          const renderRow = (lineSets, rowHeight, isStriped) => {
+            pdf.setDrawColor(tableBorderColor.r, tableBorderColor.g, tableBorderColor.b);
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(9);
+            pdf.setTextColor(tableTextColor.r, tableTextColor.g, tableTextColor.b);
+            headers.forEach((_, colIdx) => {
+              const cellX = columnOffsets[colIdx];
+              const cellWidth = columnWidths[colIdx];
+              const fillColor = isStriped ? tableStripeFill : { r: 255, g: 255, b: 255 };
+              pdf.setFillColor(fillColor.r, fillColor.g, fillColor.b);
+              pdf.rect(cellX, yPosition, cellWidth, rowHeight, 'FD');
+              const textLines = lineSets[colIdx].length > 0 ? lineSets[colIdx] : [''];
+              textLines.forEach((line, lineIdx) => {
+                pdf.text(line, cellX + tablePaddingX, yPosition + tablePaddingY + tableRowLineHeight * (lineIdx + 0.7));
+              });
+            });
+            yPosition += rowHeight;
+          };
+
+          renderHeader();
+
+          rows.forEach((row, rowIdx) => {
+            const lineSets = headers.map((_, colIdx) => {
+              const cellWidth = Math.max(columnWidths[colIdx] - tablePaddingX * 2, 8);
+              return pdf.splitTextToSize(sanitizeKeggCell(row[colIdx]), cellWidth);
+            });
+            const maxLines = Math.max(...lineSets.map((lines) => Math.max(lines.length, 1)));
+            const rowHeight = maxLines * tableRowLineHeight + tablePaddingY * 2;
+            if (yPosition + rowHeight > pageHeight - 20) {
+              pdf.addPage();
+              yPosition = topMargin - 20;
+              renderHeader();
+            }
+            renderRow(lineSets, rowHeight, rowIdx % 2 === 1);
+          });
+
+          yPosition += 6;
+          return true;
+        };
+
+        keggAnalyses.forEach((entry, index) => {
+          if (yPosition > pageHeight - 60) {
+            pdf.addPage();
+            yPosition = topMargin - 20;
+          }
+
+          const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : `Analysis ${index + 1}`;
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(12);
+          pdf.setTextColor(70, 70, 70);
+          pdf.text(`KEGG Pathway Analysis (${friendlyPair})`, marginLeft, yPosition);
+          yPosition += lineHeight;
+
+          if (entry.summary) {
+            const summaryLines = pdf.splitTextToSize(entry.summary, contentWidth);
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(10);
+            pdf.setTextColor(tableTextColor.r, tableTextColor.g, tableTextColor.b);
+            summaryLines.forEach((line) => {
+              if (yPosition > pageHeight - 30) {
+                pdf.addPage();
+                yPosition = topMargin - 20;
+              }
+              pdf.text(line, marginLeft, yPosition);
+              yPosition += lineHeight - 1;
+            });
+            yPosition += 2;
+          }
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(10);
+          pdf.setTextColor(80, 80, 80);
+          const metricLine = `Input genes: ${entry.inputGeneCount ?? 'N/A'}    Significant pathways: ${entry.significantPathwayCount ?? 'N/A'} / ${entry.totalPathways ?? 'N/A'}`;
+          const metricLines = pdf.splitTextToSize(metricLine, contentWidth);
+          metricLines.forEach((line) => {
+            if (yPosition > pageHeight - 25) {
+              pdf.addPage();
+              yPosition = topMargin - 20;
+            }
+            pdf.text(line, marginLeft, yPosition);
+            yPosition += lineHeight - 1;
+          });
+          yPosition += 2;
+
+          const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
+          const columns = buildKeggColumns(entry.table);
+          const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
+          const tableHeaders = columns.map((column) => column.label);
+          const tableRows = displayedRows.map((row, rowIdx) => columns.map((column) => column.getValue(row, rowIdx)));
+          const tableDrawn = drawKeggTable(tableHeaders, tableRows);
+
+          if (!tableDrawn) {
+            if (yPosition > pageHeight - 30) {
+              pdf.addPage();
+              yPosition = topMargin - 20;
+            }
+            pdf.setFont('helvetica', 'italic');
+            pdf.setFontSize(9);
+            pdf.setTextColor(110, 110, 110);
+            pdf.text('No pathway table was returned for this run.', marginLeft, yPosition);
+            yPosition += lineHeight;
+          } else {
+            if (yPosition > pageHeight - 20) {
+              pdf.addPage();
+              yPosition = topMargin - 20;
+            }
+            pdf.setFont('helvetica', 'italic');
+            pdf.setFontSize(9);
+            pdf.setTextColor(110, 110, 110);
+            const footnoteText = rows.length > displayedRows.length
+              ? `Showing top ${displayedRows.length} of ${rows.length} pathways. Download the CSV for the complete list.`
+              : `Showing top ${displayedRows.length} pathways. Download the CSV to keep a copy.`;
+            const footnoteLines = pdf.splitTextToSize(footnoteText, contentWidth);
+            footnoteLines.forEach((line) => {
+              if (yPosition > pageHeight - 20) {
+                pdf.addPage();
+                yPosition = topMargin - 20;
+              }
+              pdf.text(line, marginLeft, yPosition);
+              yPosition += lineHeight - 1;
+            });
+            yPosition += 1;
+
+            if (entry.downloadUrl) {
+              if (yPosition > pageHeight - 20) {
+                pdf.addPage();
+                yPosition = topMargin - 20;
+              }
+              pdf.setFont('helvetica', 'bold');
+              pdf.setFontSize(9);
+              pdf.setTextColor(47, 79, 181);
+              pdf.textWithLink('Download KEGG results CSV', marginLeft, yPosition, { url: entry.downloadUrl });
+              yPosition += lineHeight;
+              pdf.setFont('helvetica', 'normal');
+              pdf.setTextColor(80, 80, 80);
+            }
+          }
+
+          yPosition += 8;
+        });
+
+        sectionNumber += 1;
+      }
+
       // ----- DETAILED ANALYSIS RESULTS (Charts) -----
       if (Object.keys(groupedAnalyses).length > 0) {
         if (yPosition > pageHeight - 40) { pdf.addPage(); yPosition = topMargin - 20; }
@@ -474,7 +726,7 @@ const AnalysisReport = ({
         pdf.setFontSize(16);
         pdf.setTextColor(60, 60, 60);
         pdf.setFont('helvetica', 'bold');
-        pdf.text(`${summarizeAnalyses && summarizeAnalyses.length > 0 ? '3' : '2'}. Analysis Results`, marginLeft, yPosition);
+        pdf.text(`${sectionNumber}. Analysis Results`, marginLeft, yPosition);
         yPosition += 10;
         
         // Bottom line
@@ -602,6 +854,8 @@ const AnalysisReport = ({
           }
           groupIdxForResults++;
         }
+
+        sectionNumber += 1;
       }
       
       // Footer
@@ -732,18 +986,17 @@ const AnalysisReport = ({
           </div>
 
           {/* Statistical Analysis Results */}
-          {summarizeAnalyses && summarizeAnalyses.length > 0 && (
+          {hasSummariesSection && (
             <div className="report-section">
-              <h3>2. Statistical Method Results</h3>
+              <h3>{statisticalSectionNumber}. Statistical Method Results</h3>
               {summarizeAnalyses.map((analysis, index) => (
-                // Add data-classpair to help PDF image selector
                 <div key={index} className="summary-section" data-classpair={analysis.classPair}>
                   <h4>Analysis for {analysis.classPair}</h4>
                   <div className="summary-image">
-                    <img 
-                        src={analysis.imagePath.startsWith('http') ? analysis.imagePath : buildUrl(`/${analysis.imagePath}`)} 
-                        alt={`Statistical Analysis for ${analysis.classPair}`} 
-                        crossOrigin="anonymous"
+                    <img
+                      src={analysis.imagePath.startsWith('http') ? analysis.imagePath : buildUrl(`/${analysis.imagePath}`)}
+                      alt={`Statistical Analysis for ${analysis.classPair}`}
+                      crossOrigin="anonymous"
                     />
                   </div>
                 </div>
@@ -751,10 +1004,83 @@ const AnalysisReport = ({
             </div>
           )}
 
+          {/* KEGG Pathway Analysis */}
+          {hasKeggAnalyses && (
+            <div className="report-section">
+              <h3>{keggSectionNumber}. KEGG Pathway Analysis</h3>
+              <div className="kegg-analysis-results">
+                {keggAnalyses.map((entry, index) => {
+                  const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : 'All Classes';
+                  const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
+                  const columns = buildKeggColumns(entry.table);
+                  const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
+                  const hasTableData = displayedRows.length > 0;
+                  const footnoteMessage = rows.length > displayedRows.length
+                    ? `Showing top ${displayedRows.length} of ${rows.length} pathways. Download the CSV for the complete list.`
+                    : `Showing top ${displayedRows.length} pathways. Download the CSV to keep a copy.`;
+                  return (
+                    <div key={entry.id || `${index}-${friendlyPair}`} className="kegg-analysis-card">
+                      <h4 className="kegg-analysis-title">KEGG Pathway Analysis ({friendlyPair})</h4>
+                      {entry.summary && <p className="kegg-summary-text">{entry.summary}</p>}
+                      <div className="kegg-stats-row">
+                        <span><strong>Input genes:</strong> {entry.inputGeneCount ?? 'N/A'}</span>
+                        <span><strong>Significant pathways:</strong> {entry.significantPathwayCount ?? 'N/A'} / {entry.totalPathways ?? 'N/A'}</span>
+                      </div>
+                      {entry.downloadUrl && (
+                        <div className="kegg-download">
+                          <a href={entry.downloadUrl} download className="kegg-download-link">
+                            Download KEGG results CSV
+                          </a>
+                        </div>
+                      )}
+                      {hasTableData ? (
+                        <div className="kegg-table-wrapper">
+                          <table className="kegg-table">
+                            <thead>
+                              <tr>
+                                {columns.map((column, headerIdx) => (
+                                  <th
+                                    key={column.label || headerIdx}
+                                    className={`kegg-table-header ${headerIdx === 0 ? 'kegg-table-header--index' : ''}`}
+                                  >
+                                    {column.label || 'Unnamed'}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {displayedRows.map((row, rowIdx) => (
+                                <tr key={rowIdx}>
+                                  {columns.map((column, cellIdx) => (
+                                    <td
+                                      key={column.label || cellIdx}
+                                      className={`kegg-table-cell ${cellIdx === 0 ? 'kegg-table-cell--index' : ''}`}
+                                    >
+                                      {column.getValue(row, rowIdx)}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          <div className="kegg-table-footnote">
+                            {footnoteMessage}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="kegg-table-footnote">No pathway table was returned for this run.</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Detailed Analysis Results (Charts) */}
           {Object.keys(groupedAnalyses).length > 0 && (
             <div className="report-section">
-              <h3>{summarizeAnalyses && summarizeAnalyses.length > 0 ? '3' : '2'}. Analysis Results</h3>
+              <h3>{analysisResultsSectionNumber}. Analysis Results</h3>
               {Object.entries(groupedAnalyses).map(([classPair, analysesInGroup]) => (
                 <div key={classPair} className="class-pair-results-group">
                   <h4>{classPair}</h4>
@@ -764,11 +1090,11 @@ const AnalysisReport = ({
                       {analysis.images?.map((image, imgIndex) => (
                         <div key={image.id || imgIndex} className="result-image">
                           {image.caption && <p className="image-caption">{image.caption}</p>}
-                          <img 
-                            src={image.path.startsWith('http') ? image.path : buildUrl(`/${image.path}`)} 
-                            alt={image.caption || `Image ${imgIndex + 1} for ${analysis.title}`} 
+                          <img
+                            src={image.path.startsWith('http') ? image.path : buildUrl(`/${image.path}`)}
+                            alt={image.caption || `Image ${imgIndex + 1} for ${analysis.title}`}
                             crossOrigin="anonymous"
-                           />
+                          />
                         </div>
                       ))}
                     </div>

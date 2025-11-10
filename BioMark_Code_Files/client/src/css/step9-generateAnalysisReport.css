@@ -83,6 +83,18 @@
   border-bottom: 1px solid #4A6DA7;
 }
 
+.kegg-table-cell {
+  word-break: break-word;
+  white-space: normal;
+}
+
+.kegg-table-header--index,
+.kegg-table-cell--index {
+  text-align: center;
+  width: 60px;
+  min-width: 60px;
+}
+
 .summary-info {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

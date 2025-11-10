@@ -92,7 +92,6 @@
   background-color: #f08080; /* Reddish color */
   color: black;
   font-weight: bold;
-  margin-top: 30px;
 }
 
 .post-analysis-options .perform-analysis:hover {
@@ -108,6 +107,30 @@
 
 .post-analysis-options .start-over:hover {
   background-color: #ffc700;
+}
+
+.post-analysis-options .perform-pathway-analysis {
+  background-color: #ff7f50; /* Coral color */
+  color: black;
+  padding: 10px 15px; /* Example padding, can be adjusted as needed */
+  margin: 10px auto; /* Top/bottom margin and horizontally centered */
+  font-weight: bold;
+  margin: 20px auto; /* Top and bottom margin, auto horizontal centering */
+  display: block; /* Make it a block element */
+  width: auto; /* Limit width */
+  min-width: 350px; /* Minimum width */
+  white-space: nowrap; /* Prevent text from wrapping (optional, width: auto is usually enough) */
+  display: block; /* Ensures button sizes to content instead of full width */
+}
+
+.post-analysis-options .perform-pathway-analysis:hover {
+  background-color: #e67350; /* Slightly darker coral on hover */
+}
+
+.post-analysis-options .perform-pathway-analysis:disabled {
+  background-color: #cccccc;
+  color: #666666;
+  cursor: not-allowed;
 }
 
 /* Summarize Statistical Methods butonu için stiller */

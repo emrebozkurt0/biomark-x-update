@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('./db/database');
 const sessionMiddleware = require('./middleware/session');
 const { sendMail } = require('./mailer');
+const pathwayAnalysisRouter = require('./routes/pathwayAnalysis');
 
 const { spawn } = require('child_process');
 
@@ -19,6 +20,7 @@ app.use(cors({
 }));
 app.use(sessionMiddleware);
 app.use(express.json()); // Middleware to parse JSON request bodies
+app.use(pathwayAnalysisRouter);
 
 // Helper function to get the correct python command depending on the OS
 const getPythonCommand = () => {

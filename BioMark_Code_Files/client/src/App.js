@@ -12,6 +12,7 @@ import HelpTooltip from './components/common/HelpTooltip';
 import AggregationHelpContent from './components/common/AggregationHelpContent';
 import { helpTexts } from './content/helpTexts';
 import LongRunNotificationModal from './components/common/LongRunNotificationModal';
+import { buildKeggColumns, KEGG_PREVIEW_LIMIT } from './utils/keggTable';
 
 const normalizeAndSortClasses = (classArray = []) => {
   return classArray
@@ -24,6 +25,7 @@ function App() {
   // These are global variables. Values defined inside functions are not accessible everywhere. These solve that problem.
   // State Variables
   const [file, setFile] = useState(null);
+  const [selectedFilePreviews, setSelectedFilePreviews] = useState([]);
   const fileInputRef = useRef(null); // File input reference
   const [error, setError] = useState('');
   const [previousAnalyses, setPreviousAnalyses] = useState([]); // Stores previous analyses
@@ -67,6 +69,9 @@ function App() {
     modelExplanation: []
   });
   const [linkExists, setLinkExists] = useState({});
+  const [keggProcessing, setKeggProcessing] = useState(false);
+  const [keggAnalyses, setKeggAnalyses] = useState([]);
+  const [canRunPathwayAnalysis, setCanRunPathwayAnalysis] = useState(false);
   // Parameter States
   const [useDefaultParams, setUseDefaultParams] = useState(true);
   // Differential Analysis Parameters
@@ -744,6 +749,7 @@ function App() {
   // Step 1: Handles clicking the Browse button and selecting a file
   const handleBrowseClick = () => {
     setFile(null); // Show file name when a file is selected
+    setSelectedFilePreviews([]);
     setInfo(''); // Clear info message
     // Reset stage to All Features when a fresh file is chosen
     setAfterFeatureSelection(false);
@@ -768,6 +774,7 @@ function App() {
     setCanUseAfterFS(false);
     setInfo('Loading demo dataset...');
     setFile(new File([""], "GSE120584_serum_norm_demo.csv", { type: "text/csv" }));
+    setSelectedFilePreviews(["GSE120584_serum_norm_demo.csv"]);
     setError(''); // Clear errors
     setAllColumns([]); // Clear previous all columns
     setUploadedInfos(null);
@@ -829,7 +836,9 @@ function App() {
   // Step 1: Updates state after a file is selected
   const handleFileChange = (e) => {
     setDemoMode(false);
-    const selectedFile = e.target.files[0];
+    const filesArray = Array.from(e.target.files || []);
+    setSelectedFilePreviews(filesArray.map((f) => f.name));
+    const selectedFile = filesArray[0];
     if (selectedFile) {
       setFile(selectedFile);
       setError('');
@@ -852,6 +861,9 @@ function App() {
       setShowStepSix(false);
       setShowStepAnalysis(false);
       setselectedClasses([]);
+    } else {
+      setFile(null);
+      setShowStepTwo(false);
     }
   };
 
@@ -1763,6 +1775,276 @@ function App() {
     }
   };
 
+  const handleKEGGAnalysis = async () => {
+    if (keggProcessing) {
+      return;
+    }
+
+    if (!Array.isArray(previousAnalyses) || previousAnalyses.length === 0) {
+      setError('Please run at least one analysis before performing KEGG pathway analysis.');
+      return;
+    }
+
+    const parseClassPairFromUrl = (urlString) => {
+      if (!urlString) {
+        return null;
+      }
+      try {
+        const { pathname } = new URL(urlString);
+        const segments = pathname.split('/').filter(Boolean);
+        const rankingIndex = segments.indexOf('feature_ranking');
+        if (rankingIndex >= 0 && segments[rankingIndex + 1]) {
+          return segments[rankingIndex + 1];
+        }
+        const summaryIndex = segments.indexOf('summaryStatisticalMethods');
+        if (summaryIndex >= 0 && segments[summaryIndex + 1] && !['png', 'pdf'].includes(segments[summaryIndex + 1])) {
+          return segments[summaryIndex + 1];
+        }
+      } catch (err) {
+        console.warn('Failed to parse class pair from URL:', urlString, err);
+      }
+      return null;
+    };
+
+    const deriveResultsDirFromUrl = (urlString) => {
+      if (!urlString) {
+        return null;
+      }
+      try {
+        const { pathname } = new URL(urlString);
+        const segments = pathname.split('/').filter(Boolean);
+        const resultsIndex = segments.indexOf('results');
+        if (resultsIndex >= 0 && segments[resultsIndex + 1]) {
+          return `results/${segments[resultsIndex + 1]}`;
+        }
+      } catch (err) {
+        console.warn('Failed to derive results directory from URL:', urlString, err);
+      }
+      return null;
+    };
+
+    const extractGenesFromCsv = (csvText, limit) => {
+      if (!csvText) {
+        return [];
+      }
+      const sanitized = csvText.replace(/^\uFEFF/, '');
+      const lines = sanitized
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length <= 1) {
+        return [];
+      }
+      const delimiter = lines[0].includes(';') ? ';' : ',';
+      const genes = [];
+      const seen = new Set();
+      for (let i = 1; i < lines.length; i += 1) {
+        const parts = lines[i].split(delimiter);
+        if (!parts.length) {
+          continue;
+        }
+        const gene = (parts[0] || '')
+          .replace(/^"|"$/g, '')
+          .replace(/^'|'$/g, '')
+          .trim();
+        if (!gene) {
+          continue;
+        }
+        const dedupeKey = gene.toUpperCase();
+        if (seen.has(dedupeKey)) {
+          continue;
+        }
+        seen.add(dedupeKey);
+        genes.push(gene);
+        if (limit && limit > 0 && genes.length >= limit) {
+          break;
+        }
+      }
+      return genes;
+    };
+
+    const candidates = [];
+    const seenUrls = new Set();
+
+    const fetchKeggResultTable = async (relativePath) => {
+      if (!relativePath) {
+        return null;
+      }
+      try {
+        const url = buildUrl(`/${relativePath}`);
+        const response = await apiFetch(url);
+        if (!response.ok) {
+          return null;
+        }
+        const rawText = (await response.text()).replace(/^\uFEFF/, '').trim();
+        if (!rawText) {
+          return null;
+        }
+        const lines = rawText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+        if (lines.length === 0) {
+          return null;
+        }
+        const delimiter = [';', '\t', ','].find((del) => lines[0].includes(del)) || ',';
+        const cleanCell = (value) => value.replace(/^"|"$/g, '').replace(/^'|'$/g, '').trim();
+        const headers = lines[0].split(delimiter).map(cleanCell);
+        const rows = lines.slice(1).map((line) => line.split(delimiter).map(cleanCell));
+        if (headers.length === 0 || rows.length === 0) {
+          return { headers, rows: [] };
+        }
+        return { headers, rows, delimiter };
+      } catch (err) {
+        console.warn('Failed to load KEGG pathway table:', err);
+        return null;
+      }
+    };
+
+    if (summarizeAnalyses.length > 0) {
+      const latest = summarizeAnalyses[summarizeAnalyses.length - 1];
+      if (latest?.csvPath) {
+        const url = buildUrl(`/${latest.csvPath}`);
+        if (!seenUrls.has(url)) {
+          seenUrls.add(url);
+          candidates.push({
+            url,
+            classPair: latest.classPair || null,
+          });
+        }
+      }
+    }
+
+    for (let idx = previousAnalyses.length - 1; idx >= 0; idx -= 1) {
+      const analysis = previousAnalyses[idx];
+      (analysis?.results || []).forEach((imagePath) => {
+        const downloadLinks = buildDownloadLinks(imagePath);
+        downloadLinks
+          .filter((link) => link?.href && /ranked_features_df\.csv/i.test(link.href))
+          .forEach((link) => {
+            if (!seenUrls.has(link.href)) {
+              seenUrls.add(link.href);
+              candidates.push({
+                url: link.href,
+                classPair: parseClassPairFromUrl(link.href),
+              });
+            }
+          });
+      });
+    }
+
+    if (candidates.length === 0) {
+      setError('No biomarker list found for KEGG pathway analysis. Please combine biomarker rankings first.');
+      return;
+    }
+
+    const geneLimit = Number.isFinite(selectedFeatureCount) && selectedFeatureCount > 0
+      ? selectedFeatureCount
+      : 50;
+
+    setError('');
+    setInfo('');
+    setKeggProcessing(true);
+
+    let selectedGenes = [];
+    let chosenCandidate = null;
+    let lastCandidateError = null;
+
+    for (const candidate of candidates) {
+      try {
+        const response = await apiFetch(candidate.url);
+        if (!response.ok) {
+          throw new Error(`Failed to download biomarker list (HTTP ${response.status})`);
+        }
+        const csvText = await response.text();
+        const genes = extractGenesFromCsv(csvText, geneLimit);
+        if (genes.length === 0) {
+          continue;
+        }
+        selectedGenes = genes;
+        chosenCandidate = candidate;
+        break;
+      } catch (err) {
+        lastCandidateError = err;
+      }
+    }
+
+    if (!selectedGenes.length) {
+      console.error('Failed to prepare biomarker genes for KEGG analysis:', lastCandidateError);
+      setKeggProcessing(false);
+      setError('Unable to prepare biomarker list for KEGG analysis. Please ensure an analysis has produced ranked features.');
+      return;
+    }
+
+    const payload = {
+      analysisResults: selectedGenes,
+    };
+
+    let resolvedClasses = Array.isArray(selectedClasses) ? selectedClasses.filter(Boolean) : [];
+    if (resolvedClasses.length < 2 && chosenCandidate?.classPair) {
+      resolvedClasses = chosenCandidate.classPair.split('_').map((cls) => cls.replace(/%20/g, ' '));
+    }
+    if (resolvedClasses.length >= 2) {
+      payload.selectedClasses = resolvedClasses;
+    }
+
+    let resolvedResultsDir = chosenCandidate?.url ? deriveResultsDirFromUrl(chosenCandidate.url) : null;
+    if (!resolvedResultsDir && analysisFilePath) {
+      const normalizedPath = String(analysisFilePath).replace(/\\/g, '/');
+      const baseName = normalizedPath.split('/').pop()?.split('.')[0];
+      if (baseName) {
+        resolvedResultsDir = `results/${baseName}`;
+      }
+    }
+    if (resolvedResultsDir) {
+      payload.resultsDir = resolvedResultsDir;
+    }
+
+    try {
+      const response = await api.post('/pathway-analysis', payload);
+      if (!response?.data) {
+        throw new Error('No response received from KEGG pathway analysis.');
+      }
+
+      if (!response.data.success) {
+        throw new Error(response.data.message || 'KEGG pathway analysis failed.');
+      }
+
+      const detail = response.data.data || {};
+      const downloadUrl = detail.pathwayResults ? buildUrl(`/${detail.pathwayResults}`) : null;
+      const classPair = detail.classPair || chosenCandidate?.classPair || null;
+      let table = null;
+      if (detail.pathwayResults) {
+        table = await fetchKeggResultTable(detail.pathwayResults);
+      }
+
+      setKeggAnalyses((prev) => ([
+        ...prev,
+        {
+          id: detail.runId || Date.now(),
+          summary: detail.summary || response.data.message,
+          message: response.data.message,
+          significantPathwayCount: detail.significantPathwayCount ?? 0,
+          totalPathways: detail.totalPathways ?? 0,
+          inputGeneCount: detail.inputGeneCount ?? selectedGenes.length,
+          classPair,
+          downloadUrl,
+          rawPath: detail.pathwayResults || null,
+          table,
+          timestamp: Date.now(),
+        },
+      ]));
+      setCanRunPathwayAnalysis(false);
+
+      setError('');
+      setInfo(response.data.message || 'KEGG pathway analysis completed.');
+      setTimeout(() => setInfo(''), 5000);
+    } catch (err) {
+      console.error('KEGG pathway analysis request failed:', err);
+      const message = err.response?.data?.message || err.message || 'KEGG pathway analysis failed.';
+      setError(message);
+    } finally {
+      setKeggProcessing(false);
+    }
+  };
+
   // Final Adımı 1: Yeni analiz yapma butonu
   const handlePerformAnotherAnalysis = () => {
     // Hide current steps (3, 4, 5, 6, 7) and update state for a new analysis block
@@ -1784,6 +2066,8 @@ function App() {
     setselectedClasses([]);
     setSelectedAnalyzes({ statisticalTest: [], dimensionalityReduction: [], classificationAnalysis: [], modelExplanation: [] });
     setUseDefaultParams(true);
+  setCanRunPathwayAnalysis(false);
+  setKeggAnalyses([]);
     // Optionally reset parameters as well.
 
     // Do not re-fetch classes; reuse existing classTable/classDiagramUrl if dataset & columns are unchanged
@@ -1805,6 +2089,7 @@ function App() {
 
     // Reset all states to initial values
     setFile(null);
+    setSelectedFilePreviews([]);
     setLoading(false);
     setAnalyzing(false);
     setProcessing(false);
@@ -1812,7 +2097,7 @@ function App() {
     setAnalysisInformation([]);
     setAnotherAnalysis([0]);
     setUploadedInfo(null);
-  setUploadedInfos(null);
+    setUploadedInfos(null);
     setShowStepOne(true);
     setShowStepTwo(false);
     setShowStepThree(false);
@@ -1836,6 +2121,9 @@ function App() {
     setDemoMode(false);
     setActiveUploadIndex(0);
     setUploadContexts({});
+  setKeggAnalyses([]);
+  setKeggProcessing(false);
+  setCanRunPathwayAnalysis(false);
     classCacheRef.current = new Map();
 
     setSelectedAnalyzes({
@@ -1900,6 +2188,8 @@ function App() {
 
     setProcessing(true);
     setError('');
+  setCanRunPathwayAnalysis(false);
+  setKeggAnalyses([]);
 
     console.log("Summarize request - selectedClassPair:", selectedClassPair, "featureCount:", selectedFeatureCount);
 
@@ -1988,6 +2278,7 @@ function App() {
 
           setImageVersion(prev => prev + 1);
           setAvailableClassPairs([]);
+      setCanRunPathwayAnalysis(true);
       } else {
             setError(response.data.message || "Summarization successful, but no image path returned.");
       }
@@ -2101,7 +2392,16 @@ function App() {
               )}
             </button>
             
-            <span id="file-name">{file ? truncateFileName(file.name) : 'No file chosen'}</span>
+            <span id="file-name">
+              {selectedFilePreviews.length > 0
+                ? selectedFilePreviews.map((name, index) => (
+                    <React.Fragment key={`${name}-${index}`}>
+                      {index > 0 && ', '}
+                      {truncateFileName(name)}
+                    </React.Fragment>
+                  ))
+                : 'No file chosen'}
+            </span>
           </div>
           
           <div className="format-instructions-row">
@@ -2943,6 +3243,96 @@ function App() {
                       {processing ? 'Processing...' : 'Combine the above biomarker list in to one list'}
                     </button>
                   </div>
+
+                  {canRunPathwayAnalysis && keggAnalyses.length === 0 && (
+                    <div className="kegg-trigger-container">
+                      <div className="or-container">
+                        <h1 className="or-text">OR</h1>
+                      </div>
+                      <button
+                        className="button perform-analysis kegg-trigger-button"
+                        onClick={handleKEGGAnalysis}
+                        disabled={keggProcessing}
+                      >
+                        {keggProcessing ? 'Running KEGG Pathway Analysis...' : 'Perform Pathway Analysis with KEGG'}
+                      </button>
+                    </div>
+                  )}
+
+                  {keggAnalyses.length > 0 && (
+                    <div className="kegg-analysis-results">
+                      {keggAnalyses.map((entry) => {
+                        const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : 'All Classes';
+                        const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
+                        const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
+                        const columns = buildKeggColumns(entry.table);
+                        const hasTableData = displayedRows.length > 0;
+                        const footnoteMessage = rows.length > displayedRows.length
+                          ? `Showing top ${displayedRows.length} of ${rows.length} pathways. Download the CSV for the complete list.`
+                          : `Showing top ${displayedRows.length} pathways. Download the CSV to keep a copy.`;
+                        return (
+                          <div
+                            key={`${entry.id}-${entry.timestamp}`}
+                            className="kegg-analysis-card"
+                          >
+                            <h3 className="kegg-analysis-title">KEGG Pathway Analysis ({friendlyPair})</h3>
+                            <p className="kegg-summary-text">{entry.summary}</p>
+                            <div className="kegg-stats-row">
+                              <span><strong>Input genes:</strong> {entry.inputGeneCount}</span>
+                              <span>
+                                <strong>Significant pathways:</strong> {entry.significantPathwayCount} / {entry.totalPathways}
+                              </span>
+                            </div>
+                            {entry.downloadUrl && (
+                              <div className="kegg-download">
+                                <a href={entry.downloadUrl} download className="kegg-download-link">
+                                  Download KEGG results CSV
+                                </a>
+                              </div>
+                            )}
+                            {hasTableData && (
+                              <div className="kegg-table-wrapper">
+                                <table className="kegg-table">
+                                  <thead>
+                                    <tr>
+                                      {columns.map((column, idx) => (
+                                        <th
+                                          key={`${entry.id}-header-${idx}`}
+                                          className={`kegg-table-header ${idx === 0 ? 'kegg-table-header--index' : ''}`}
+                                        >
+                                          {column.label || 'Unnamed'}
+                                        </th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {displayedRows.map((row, rowIdx) => (
+                                      <tr key={`${entry.id}-row-${rowIdx}`}>
+                                        {columns.map((column, colIdx) => (
+                                          <td
+                                            key={`${entry.id}-row-${rowIdx}-col-${colIdx}`}
+                                            className={`kegg-table-cell ${colIdx === 0 ? 'kegg-table-cell--index' : ''}`}
+                                          >
+                                            {column.getValue(row, rowIdx)}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                                <div className="kegg-table-footnote">
+                                  {footnoteMessage}
+                                </div>
+                              </div>
+                            )}
+                            {!hasTableData && (
+                              <div className="kegg-table-footnote">No pathway table was returned for this run.</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   
                   {/* Class pair selection modal */}
                   {availableClassPairs.length > 0 && (
@@ -3063,6 +3453,7 @@ function App() {
                       imagePath: buildUrl(`/${analysis.imagePath}?t=${analysis.timestamp}&v=${analysis.version}`)
                     }))}
                     datasetFileName={datasetNamesForReport}
+                    keggAnalyses={keggAnalyses}
                   />
                 </div>
               )}

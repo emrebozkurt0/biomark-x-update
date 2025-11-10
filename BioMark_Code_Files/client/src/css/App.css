@@ -287,3 +287,121 @@ body {
   justify-self: start; /* place button at the start of its grid column */
   align-self: center;  /* vertically center relative to tables */
 }
+
+/* KEGG pathway analysis results */
+.kegg-trigger-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.kegg-trigger-button {
+  margin-top: 0;
+  margin-left: 0;
+  min-width: 300px;
+}
+
+.kegg-trigger-button:disabled {
+  background-color: #d6dcf5;
+  color: #7a86b6;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.kegg-trigger-button:disabled:hover {
+  background-color: #d6dcf5;
+}
+
+.kegg-analysis-results {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.kegg-analysis-card {
+  width: 80%;
+  align-self: center;
+  border: 1px solid #d7e2ff;
+  border-radius: 8px;
+  padding: 16px;
+  background: #f4f7ff;
+}
+
+.kegg-analysis-title {
+  margin: 0 0 8px 0;
+}
+
+.kegg-summary-text {
+  margin: 0 0 12px 0;
+  color: #2b365a;
+}
+
+.kegg-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 14px;
+  color: #2b365a;
+}
+
+.kegg-download {
+  margin-top: 12px;
+}
+
+.kegg-download-link {
+  font-weight: 600;
+  text-decoration: underline;
+  color: #2f4fb5;
+}
+
+.kegg-download-link:hover {
+  color: #1d357d;
+}
+
+.kegg-table-wrapper {
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+.kegg-table {
+  width: 100%;
+  min-width: 600px;
+  border-collapse: collapse;
+  background: #ffffff;
+}
+
+.kegg-table-header {
+  border: 1px solid #d7e2ff;
+  background: #eaf0ff;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 14px;
+  color: #2b365a;
+}
+
+.kegg-table-cell {
+  border: 1px solid #d7e2ff;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #2b365a;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.kegg-table-footnote {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #4b5975;
+}
+
+.kegg-table-header--index,
+.kegg-table-cell--index {
+  text-align: center;
+  width: 60px;
+  min-width: 60px;
+}
