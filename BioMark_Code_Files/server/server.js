@@ -326,7 +326,8 @@ app.post('/merge-files', async (req, res) => {
                     size: sizeBytes,
                     metadataPath: parsed.metadataPath,
                     columns: parsed.columns,
-                    uploadId: mergedUploadId
+                    uploadId: mergedUploadId,
+                    unifiedSampleColumn: parsed.unifiedSampleColumn || 'Sample ID'  // Always "Sample ID" after merge
                 });
             } catch (err) {
                 console.error(err);
@@ -482,24 +483,57 @@ app.post('/analyze', (req, res) => {
         usePreprocessing
     } = req.body;
 
-    // Derive uploadId from prefixed filename (UUID_originalName.ext)
-    const derivedUploadId = path.basename(filePath).split('_')[0];
+    // Normalize file path for cross-platform consistency
+    const normalizedFilePath = path.normalize(filePath);
+    const baseFileName = path.basename(filePath);
+    const fileNameWithoutExt = path.parse(baseFileName).name;
 
-    // Ownership check
-    const uploadOwner = db.prepare('SELECT session_id FROM uploads WHERE id = ?').get(derivedUploadId);
-    if (!uploadOwner || uploadOwner.session_id !== req.sessionId) {
-        return res.status(403).json({ success: false, error: 'Access denied for this file' });
+    // Check if it's a merged file (saved in uploads directory with _merged_dataset suffix)
+    const isMergedFile = baseFileName.includes('_merged_dataset.csv');
+
+    // Ownership check — only apply to user uploads
+    if (!isMergedFile) {
+        const derivedUploadId = path.basename(filePath).split('_')[0];
+        const uploadOwner = db.prepare('SELECT session_id FROM uploads WHERE id = ?').get(derivedUploadId);
+        
+        if (!uploadOwner || uploadOwner.session_id !== req.sessionId) {
+            return res.status(403).json({ success: false, error: 'Access denied for this file' });
+        }
     }
 
-    // Allow client to provide a stable job id so email subscriptions can match
-    const analysisId = req.body.clientJobId && typeof req.body.clientJobId === 'string' && req.body.clientJobId.trim() !== ''
-        ? req.body.clientJobId.trim()
-        : uuidv4();
+    const analysisId = uuidv4();
+    let derivedUploadIdForInsert = null;
+    let mergedFileId = null;
 
-    // Record analysis start
+    if (!isMergedFile) {
+        derivedUploadIdForInsert = path.basename(filePath).split('_')[0];
+    } else {
+        // Extract merged file ID from filename like "FULLID_merged_dataset.csv"
+        const basename = path.basename(filePath);
+        const match = basename.match(/^([a-f0-9]+)_merged_dataset\.csv$/);
+        if (match) {
+            mergedFileId = match[1];
+        }
+    }
+
+    // Record analysis start with metadata
     try {
-        db.prepare('INSERT INTO analyses (id, upload_id, status) VALUES (?,?,?)')
-          .run(analysisId, derivedUploadId, 'running');
+        const metadata = {
+            illnessColumn: IlnessColumnName,
+            sampleColumn: SampleColumnName,
+            selectedClasses: selectedClasses || [],
+            analysisMethods: {
+                statisticalTest: statisticalTest || [],
+                dimensionalityReduction: dimensionalityReduction || [],
+                classificationAnalysis: classificationAnalysis || [],
+                modelExplanation: modelExplanation || []
+            },
+            nonFeatureColumns: nonFeatureColumns || [],
+            isDiffAnalysis: isDiffAnalysis || [...(statisticalTest || []), ...(modelExplanation || [])]
+        };
+        
+        db.prepare('INSERT INTO analyses (id, upload_id, merged_file_id, session_id, status, analysis_metadata) VALUES (?,?,?,?,?,?)')
+          .run(analysisId, derivedUploadIdForInsert, mergedFileId, req.sessionId, 'running', JSON.stringify(metadata));
     } catch (err) {
         console.error('Failed to insert analysis record:', err);
     }
@@ -518,12 +552,12 @@ app.post('/analyze', (req, res) => {
         filePath, 
         IlnessColumnName, 
         SampleColumnName, 
-        Array.isArray(selectedClasses) ? selectedClasses.join(',') : '', 
+        Array.isArray(selectedClasses) ? selectedClasses : [], 
         Array.isArray(statisticalTest) && statisticalTest.length > 0 ? statisticalTest.join(',') : '', 
         Array.isArray(dimensionalityReduction) && dimensionalityReduction.length > 0 ? dimensionalityReduction.join(',') : '', 
         Array.isArray(classificationAnalysis) && classificationAnalysis.length > 0 ? classificationAnalysis.join(',') : '', 
         Array.isArray(modelExplanation) && modelExplanation.length > 0 ? modelExplanation.join(',') : '', // Add explanation
-        Array.isArray(nonFeatureColumns) ? nonFeatureColumns.join(',') : '', 
+        Array.isArray(nonFeatureColumns) ? nonFeatureColumns : [], 
         Array.isArray(safeIsDiffAnalysis) ? safeIsDiffAnalysis.join(',') : '', // Differential analyses
         String(safeAfterFeatureSelection) // After feature selection status
     ];

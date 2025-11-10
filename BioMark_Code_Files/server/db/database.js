@@ -34,11 +34,15 @@ CREATE TABLE IF NOT EXISTS uploads (
 
 CREATE TABLE IF NOT EXISTS analyses (
   id TEXT PRIMARY KEY,
-  upload_id TEXT NOT NULL,
+  upload_id TEXT,
+  merged_file_id TEXT,
+  session_id TEXT,
   result_path TEXT,
   status TEXT DEFAULT 'pending',
+  analysis_metadata TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE
+  FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES users(session_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS notification_subscriptions (

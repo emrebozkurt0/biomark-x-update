@@ -56,6 +56,12 @@ def merge_files(chosen_columns):
         if sample_col != key_col:
             merged_df.drop(columns=[sample_col], inplace=True)
 
+    # Rename the key column to a standardized name to avoid confusion
+    # This ensures the merged file always has "Sample ID" as the sample column
+    if key_col != "Sample ID":
+        merged_df.rename(columns={key_col: "Sample ID"}, inplace=True)
+        key_col = "Sample ID"
+
     # Convert numeric columns to float for consistency
     for col in merged_df.select_dtypes(include=['int64', 'float64']).columns:
         merged_df[col] = merged_df[col].astype(float)
@@ -75,6 +81,7 @@ def merge_files(chosen_columns):
         "merged_id": upload_id,
         "timestamp": datetime.now().isoformat(),
         "merge_type": "inner",
+        "unified_sample_column": key_col,  # Always "Sample ID" after standardization
         "input_files": {},
         "merged_file": merged_file_path,
         "merged_columns": merged_df.columns.tolist(),
@@ -105,7 +112,8 @@ def merge_files(chosen_columns):
         'columns': merged_df.columns.tolist(),
         'uploadId': upload_id,
         'mergedFileName': merged_filename,
-        'sizeBytes': metadata['size_bytes']
+        'sizeBytes': metadata['size_bytes'],
+        'unifiedSampleColumn': key_col  # Always "Sample ID"
     }
 
 if __name__ == "__main__":

@@ -125,6 +125,18 @@ def run_model_explanation(data, selectedIllnessColumn, selectedSampleColumn, out
     """Train classification model(s) to get trained models and run explanation methods."""
     # Train only to obtain models for explanation
     print("Running classification to get model for explanation.....\n")
+    
+    # Check if the sample column exists, if not, try "Sample ID" as fallback for merged files
+    if selectedSampleColumn not in data.columns:
+        print(f"WARNING: Column '{selectedSampleColumn}' not found in dataset!")
+        if "Sample ID" in data.columns:
+            print(f"Using 'Sample ID' instead (merged files always use 'Sample ID')")
+            selectedSampleColumn = "Sample ID"
+        else:
+            print(f"ERROR: Neither '{selectedSampleColumn}' nor 'Sample ID' found in dataset!")
+            print(f"Available columns: {data.columns.tolist()}")
+            return
+    
     clf = Classification(
         data=data.drop(columns=selectedSampleColumn),
         labels_column=selectedIllnessColumn,
@@ -473,9 +485,87 @@ if __name__ == "__main__":
 
     # Load data
     df = load_table(data_path)
-    
-    # Filter data for selected classes
-    df = df[df[selectedIllnessColumn].isin([selectedClasseses[0], selectedClasseses[1]])]
+
+    # Normalize selected classes to strings (strip whitespace)
+    selected_classes_norm = [str(x).strip() for x in selectedClasseses]
+
+    # Debug: show original DataFrame info
+    print(f"Original df shape before filtering: {df.shape}")
+    try:
+        print(f"Sample unique values in column '{selectedIllnessColumn}':", pd.Series(df[selectedIllnessColumn].dropna().astype(str).str.strip().unique()[:50]))
+    except Exception:
+        pass
+
+    # Filter data for selected classes - handle multiple cell formats:
+    #  - plain values (numeric or string)
+    #  - list-like strings ("['1','2']")
+    #  - delimited strings ("1;2" or "1,2")
+    import ast
+
+    # Precompute numeric representations of targets when possible for numeric comparison
+    numeric_targets = {}
+    for t in selected_classes_norm:
+        try:
+            numeric_targets[t] = float(t)
+        except Exception:
+            numeric_targets[t] = None
+
+    def numeric_equal(a_str, t_str):
+        # compare strings a_str and t_str numerically when possible
+        try:
+            a_float = float(a_str)
+            t_float = numeric_targets.get(t_str)
+            if t_float is None:
+                try:
+                    t_float = float(t_str)
+                except Exception:
+                    return False
+            return a_float == t_float
+        except Exception:
+            return False
+
+    def cell_matches(cell_val, targets):
+        # Return True if cell_val (various formats) contains any of targets
+        if pd.isna(cell_val):
+            return False
+        s = str(cell_val).strip()
+        # try to parse python literal lists/tuples
+        if s.startswith('[') and s.endswith(']'):
+            try:
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, (list, tuple, set)):
+                    for item in parsed:
+                        item_s = str(item).strip()
+                        if item_s in targets:
+                            return True
+                        # numeric compare
+                        for t in targets:
+                            if numeric_equal(item_s, t):
+                                return True
+            except Exception:
+                pass
+        # check common delimiters
+        for delim in [',', ';', '|', '/']:
+            if delim in s:
+                parts = [p.strip() for p in s.split(delim) if p.strip()]
+                for p in parts:
+                    if p in targets:
+                        return True
+                    for t in targets:
+                        if numeric_equal(p, t):
+                            return True
+        # fallback to direct match or numeric equality
+        if s in targets:
+            return True
+        for t in targets:
+            if numeric_equal(s, t):
+                return True
+        return False
+
+    print(f"Filtering by selected classes (stringified): {selected_classes_norm}")
+    mask = df[selectedIllnessColumn].apply(lambda v: cell_matches(v, selected_classes_norm))
+    print(f"Rows matching selected classes: {mask.sum()} / {len(mask)}")
+    df = df[mask]
 
     """ Data Preparation for Analysis """
     # Check column names and find matching columns
@@ -495,6 +585,45 @@ if __name__ == "__main__":
     
     # Drop matching columns from dataframe
     data = df.drop(columns=valid_columns).reset_index(drop=True)
+    # Ensure feature dtypes are acceptable for XGBoost: int/float/bool/category
+    obj_cols = data.select_dtypes(include=['object']).columns.tolist()
+    if obj_cols:
+        print(f"Converting object-typed feature columns: {obj_cols}")
+        for col in obj_cols:
+            # skip the label column if present (shouldn't be in data here)
+            if col == selectedIllnessColumn or col == selectedSampleColumn:
+                continue
+            # try numeric conversion
+            coerced = pd.to_numeric(data[col], errors='coerce')
+            if coerced.notna().sum() > 0 and coerced.isna().sum() < len(coerced):
+                # If a reasonable number converted, use numeric with median imputation for NaNs
+                med = coerced.median()
+                data[col] = coerced.fillna(med)
+                print(f"Column {col}: converted to numeric with median imputation (median={med})")
+            else:
+                # fallback: convert to categorical then use integer codes so XGBoost gets numeric dtype
+                s = data[col].astype('category')
+                try:
+                    mode_val = s.mode(dropna=True).iloc[0]
+                    s = s.fillna(mode_val)
+                except Exception:
+                    # if no mode, fill with empty string category
+                    s = s.fillna('')
+                codes = s.cat.codes
+                data[col] = codes
+                print(f"Column {col}: converted to categorical codes (int) with {len(s.cat.categories)} categories")
+    
+    # Fix for merged files: if the selected sample column doesn't exist but "Sample ID" does,
+    # use "Sample ID" instead (merged files always standardize to "Sample ID")
+    if selectedSampleColumn not in data.columns:
+        print(f"WARNING: Column '{selectedSampleColumn}' not found in dataset!")
+        if "Sample ID" in data.columns:
+            print(f"Using 'Sample ID' instead (merged files always use 'Sample ID')")
+            selectedSampleColumn = "Sample ID"
+        else:
+            print(f"ERROR: Neither '{selectedSampleColumn}' nor 'Sample ID' found in dataset!")
+            print(f"Available columns: {data.columns.tolist()}")
+            exit(1)
 
     # If `afterFeatureSelection` is true, we need to perform feature selection now.
     if afterFeatureSelection:
