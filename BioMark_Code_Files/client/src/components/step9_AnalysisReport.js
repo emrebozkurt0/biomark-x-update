@@ -2,7 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import jsPDF from 'jspdf';
 import '../css/step9-generateAnalysisReport.css';
 import { buildUrl } from '../api';
-import { buildKeggColumns, KEGG_PREVIEW_LIMIT, sanitizeKeggCell } from '../utils/keggTable';
+import { buildKeggColumns, sanitizeKeggCell } from '../utils/keggTable';
+
+const KEGG_REPORT_PREVIEW_LIMIT = 10; // limit report tables to top 10 pathways
 
 const TYPE_LABELS = {
   differential: 'Differential Analyses',
@@ -661,7 +663,7 @@ const AnalysisReport = ({
 
           const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
           const columns = buildKeggColumns(entry.table);
-          const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
+          const displayedRows = rows.slice(0, KEGG_REPORT_PREVIEW_LIMIT);
           const tableHeaders = columns.map((column) => column.label);
           const tableRows = displayedRows.map((row, rowIdx) => columns.map((column) => column.getValue(row, rowIdx)));
           const tableDrawn = drawKeggTable(tableHeaders, tableRows);
@@ -1013,7 +1015,7 @@ const AnalysisReport = ({
                   const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : 'All Classes';
                   const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
                   const columns = buildKeggColumns(entry.table);
-                  const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
+                  const displayedRows = rows.slice(0, KEGG_REPORT_PREVIEW_LIMIT);
                   const hasTableData = displayedRows.length > 0;
                   const footnoteMessage = rows.length > displayedRows.length
                     ? `Showing top ${displayedRows.length} of ${rows.length} pathways. Download the CSV for the complete list.`
