@@ -21,8 +21,39 @@ const toRelativeResultPath = (absolutePath) => {
   return path.relative(serverRoot, absolutePath).replace(/\\/g, '/');
 };
 
+const ENRICHMENT_CONFIG = {
+  KEGG: {
+    geneSet: 'KEGG_2021_Human',
+    analysisLabel: 'kegg_pathway_analysis',
+    analysisDisplayName: 'KEGG Pathway Analysis',
+  },
+  GO_BP: {
+    geneSet: 'GO_Biological_Process_2021',
+    analysisLabel: 'go_biological_process',
+    analysisDisplayName: 'GO Biological Process Enrichment',
+  },
+  GO_CC: {
+    geneSet: 'GO_Cellular_Component_2021',
+    analysisLabel: 'go_cellular_component',
+    analysisDisplayName: 'GO Cellular Component Enrichment',
+  },
+  GO_MF: {
+    geneSet: 'GO_Molecular_Function_2021',
+    analysisLabel: 'go_molecular_function',
+    analysisDisplayName: 'GO Molecular Function Enrichment',
+  },
+};
+
 router.post('/pathway-analysis', async (req, res) => {
-  const { analysisResults, selectedClasses = [], resultsDir = null } = req.body ?? {};
+  const {
+    analysisResults,
+    selectedClasses = [],
+    resultsDir = null,
+    analysisType = 'KEGG',
+    geneSet = null,
+    analysisLabel = null,
+    analysisDisplayName = null,
+  } = req.body ?? {};
 
   const sanitizedGenes = Array.isArray(analysisResults)
     ? analysisResults
@@ -67,12 +98,24 @@ router.post('/pathway-analysis', async (req, res) => {
       : path.join(__dirname, '..', resultsDir);
   }
 
+  const normalizedType = typeof analysisType === 'string' && analysisType.trim().length > 0
+    ? analysisType.trim().toUpperCase()
+    : 'KEGG';
+  const defaultConfig = ENRICHMENT_CONFIG[normalizedType] || ENRICHMENT_CONFIG.KEGG;
+
+  const resolvedGeneSet = geneSet || defaultConfig.geneSet;
+  const resolvedAnalysisLabel = analysisLabel || defaultConfig.analysisLabel || normalizedType.toLowerCase();
+  const resolvedDisplayName = analysisDisplayName || defaultConfig.analysisDisplayName || `${normalizedType} Enrichment`;
+
   const pythonArgs = [
     '-Xfrozen_modules=off',
     scriptPath,
     geneListFile,
     resolvedResultsDir,
     classPair,
+    resolvedGeneSet,
+    resolvedAnalysisLabel,
+    resolvedDisplayName,
   ];
 
   console.log('Starting pathway analysis with command:', pythonCommand, pythonArgs.join(' '));
@@ -111,8 +154,11 @@ router.post('/pathway-analysis', async (req, res) => {
       const parsed = JSON.parse(stdout.trim());
       console.log('Pathway analysis output:', parsed);
 
-      if (parsed?.data?.pathwayResults) {
-        parsed.data.pathwayResults = toRelativeResultPath(parsed.data.pathwayResults);
+      if (parsed?.data) {
+        if (parsed.data.pathwayResults) {
+          parsed.data.pathwayResults = toRelativeResultPath(parsed.data.pathwayResults);
+        }
+        parsed.data.analysisType = normalizedType;
       }
 
       if (parsed.success) {

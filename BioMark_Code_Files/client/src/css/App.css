@@ -296,22 +296,50 @@ body {
   gap: 10px;
 }
 
+.enrichment-button-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 780px;
+}
+
 .kegg-trigger-button {
-  margin-top: 0;
-  margin-left: 0;
-  min-width: 300px;
+  margin: 0;
+  min-width: 260px;
+  padding: 12px 18px;
+  border: 1px solid #b5c7eb;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f5f8ff 0%, #6391fc 100%);
+  color: #1f2a44;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  box-shadow: 0 4px 12px rgba(31, 42, 68, 0.12);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.kegg-trigger-button:hover {
+  box-shadow: 0 6px 16px rgba(31, 42, 68, 0.18);
+  background: linear-gradient(135deg, #e9f1ff 0%, #c9d9ff 100%);
+}
+
+.kegg-trigger-button:focus-visible {
+  outline: 3px solid rgba(75, 109, 167, 0.35);
+  outline-offset: 3px;
 }
 
 .kegg-trigger-button:disabled {
-  background-color: #d6dcf5;
-  color: #7a86b6;
+  background-color: #cccccc;
+  color: #666666;
   cursor: not-allowed;
+  border-color: #cdd3e5;
   box-shadow: none;
   transform: none;
 }
 
 .kegg-trigger-button:disabled:hover {
-  background-color: #d6dcf5;
+  background-color: #e3e6ef;
 }
 
 .kegg-analysis-results {

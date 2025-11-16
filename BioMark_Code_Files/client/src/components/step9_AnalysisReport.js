@@ -4,7 +4,7 @@ import '../css/step9-generateAnalysisReport.css';
 import { buildUrl } from '../api';
 import { buildKeggColumns, sanitizeKeggCell } from '../utils/keggTable';
 
-const KEGG_REPORT_PREVIEW_LIMIT = 10; // limit report tables to top 10 pathways
+const ENRICHMENT_REPORT_PREVIEW_LIMIT = 10; // limit report tables to top 10 pathways
 
 const TYPE_LABELS = {
   differential: 'Differential Analyses',
@@ -103,7 +103,7 @@ const AnalysisReport = ({
   summaryImagePath, // This prop is related to summarizeAnalyses and its structure is preserved
   summarizeAnalyses, // This prop's structure is good and preserved
   datasetFileName, // Name(s) of the file(s) used in the analysis (string or string[])
-  keggAnalyses = []
+  enrichmentAnalyses = []
 }) => {
   // State for loading overlay
   const [loading, setLoading] = useState(false);
@@ -140,10 +140,10 @@ const AnalysisReport = ({
   }, [analysisResults]);
 
   const hasSummariesSection = Array.isArray(summarizeAnalyses) && summarizeAnalyses.length > 0;
-  const hasKeggAnalyses = Array.isArray(keggAnalyses) && keggAnalyses.length > 0;
+  const hasEnrichmentAnalyses = Array.isArray(enrichmentAnalyses) && enrichmentAnalyses.length > 0;
   const statisticalSectionNumber = hasSummariesSection ? 2 : null;
-  const keggSectionNumber = hasKeggAnalyses ? (hasSummariesSection ? 3 : 2) : null;
-  const analysisResultsSectionNumber = 1 + (hasSummariesSection ? 1 : 0) + (hasKeggAnalyses ? 1 : 0) + 1;
+  const enrichmentSectionNumber = hasEnrichmentAnalyses ? (hasSummariesSection ? 3 : 2) : null;
+  const analysisResultsSectionNumber = 1 + (hasSummariesSection ? 1 : 0) + (hasEnrichmentAnalyses ? 1 : 0) + 1;
   
   // Load logo as DataURL for PDF
   useEffect(() => {
@@ -486,8 +486,8 @@ const AnalysisReport = ({
         sectionNumber += 1;
       }
       
-      // ----- KEGG PATHWAY ANALYSIS -----
-      if (hasKeggAnalyses) {
+      // ----- ENRICHMENT ANALYSES -----
+      if (hasEnrichmentAnalyses) {
         if (yPosition > pageHeight - 40) {
           pdf.addPage();
           yPosition = topMargin - 20;
@@ -496,7 +496,7 @@ const AnalysisReport = ({
         pdf.setFontSize(16);
         pdf.setTextColor(60, 60, 60);
         pdf.setFont('helvetica', 'bold');
-        pdf.text(`${sectionNumber}. KEGG Pathway Analysis`, marginLeft, yPosition);
+        pdf.text(`${sectionNumber}. Enrichment Analyses`, marginLeft, yPosition);
         yPosition += 10;
 
         pdf.setDrawColor(74, 109, 167);
@@ -526,7 +526,7 @@ const AnalysisReport = ({
           Genes: 0.18
         };
 
-        const drawKeggTable = (headers, rows) => {
+        const drawEnrichmentTable = (headers, rows) => {
           if (!Array.isArray(headers) || headers.length === 0 || !Array.isArray(rows) || rows.length === 0) {
             return false;
           }
@@ -620,17 +620,18 @@ const AnalysisReport = ({
           return true;
         };
 
-        keggAnalyses.forEach((entry, index) => {
+        enrichmentAnalyses.forEach((entry, index) => {
           if (yPosition > pageHeight - 60) {
             pdf.addPage();
             yPosition = topMargin - 20;
           }
 
           const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : `Analysis ${index + 1}`;
+          const displayName = entry.analysisDisplayName || entry.analysisType || 'Pathway Enrichment';
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(12);
           pdf.setTextColor(70, 70, 70);
-          pdf.text(`KEGG Pathway Analysis (${friendlyPair})`, marginLeft, yPosition);
+          pdf.text(`${displayName} (${friendlyPair})`, marginLeft, yPosition);
           yPosition += lineHeight;
 
           if (entry.summary) {
@@ -666,10 +667,10 @@ const AnalysisReport = ({
 
           const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
           const columns = buildKeggColumns(entry.table);
-          const displayedRows = rows.slice(0, KEGG_REPORT_PREVIEW_LIMIT);
+          const displayedRows = rows.slice(0, ENRICHMENT_REPORT_PREVIEW_LIMIT);
           const tableHeaders = columns.map((column) => column.label);
           const tableRows = displayedRows.map((row, rowIdx) => columns.map((column) => column.getValue(row, rowIdx)));
-          const tableDrawn = drawKeggTable(tableHeaders, tableRows);
+          const tableDrawn = drawEnrichmentTable(tableHeaders, tableRows);
 
           if (!tableDrawn) {
             if (yPosition > pageHeight - 30) {
@@ -711,7 +712,8 @@ const AnalysisReport = ({
               pdf.setFont('helvetica', 'bold');
               pdf.setFontSize(9);
               pdf.setTextColor(47, 79, 181);
-              pdf.textWithLink('Download KEGG results CSV', marginLeft, yPosition, { url: entry.downloadUrl });
+              const linkLabel = `Download ${displayName} results CSV`;
+              pdf.textWithLink(linkLabel, marginLeft, yPosition, { url: entry.downloadUrl });
               yPosition += lineHeight;
               pdf.setFont('helvetica', 'normal');
               pdf.setTextColor(80, 80, 80);
@@ -1012,23 +1014,24 @@ const AnalysisReport = ({
             </div>
           )}
 
-          {/* KEGG Pathway Analysis */}
-          {hasKeggAnalyses && (
+          {/* Enrichment Analyses */}
+          {hasEnrichmentAnalyses && (
             <div className="report-section">
-              <h3>{keggSectionNumber}. KEGG Pathway Analysis</h3>
+              <h3>{enrichmentSectionNumber}. Enrichment Analyses</h3>
               <div className="kegg-analysis-results">
-                {keggAnalyses.map((entry, index) => {
+                {enrichmentAnalyses.map((entry, index) => {
                   const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : 'All Classes';
+                  const displayName = entry.analysisDisplayName || entry.analysisType || 'Pathway Enrichment';
                   const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
                   const columns = buildKeggColumns(entry.table);
-                  const displayedRows = rows.slice(0, KEGG_REPORT_PREVIEW_LIMIT);
+                  const displayedRows = rows.slice(0, ENRICHMENT_REPORT_PREVIEW_LIMIT);
                   const hasTableData = displayedRows.length > 0;
                   const footnoteMessage = rows.length > displayedRows.length
                     ? `Showing top ${displayedRows.length} of ${rows.length} pathways. Download the CSV for the complete list.`
                     : `Showing top ${displayedRows.length} pathways. Download the CSV to keep a copy.`;
                   return (
                     <div key={entry.id || `${index}-${friendlyPair}`} className="kegg-analysis-card">
-                      <h4 className="kegg-analysis-title">KEGG Pathway Analysis ({friendlyPair})</h4>
+                      <h4 className="kegg-analysis-title">{displayName} ({friendlyPair})</h4>
                       {entry.summary && <p className="kegg-summary-text">{entry.summary}</p>}
                       <div className="kegg-stats-row">
                         <span><strong>Input genes:</strong> {entry.inputGeneCount ?? 'N/A'}</span>
@@ -1037,7 +1040,7 @@ const AnalysisReport = ({
                       {entry.downloadUrl && (
                         <div className="kegg-download">
                           <a href={entry.downloadUrl} download className="kegg-download-link">
-                            Download KEGG results CSV
+                            Download {displayName} results CSV
                           </a>
                         </div>
                       )}

@@ -14,14 +14,21 @@ DEFAULT_ORGANISM = "Human"
 SIGNIFICANCE_THRESHOLD = 0.05
 
 
-def ensure_output_directory(base_dir: str, class_pair: str) -> str:
+def sanitize_label_for_path(label: str) -> str:
+    if not label:
+        return "kegg_pathway_analysis_results"
+    safe = label.strip().lower().replace(" ", "_")
+    return safe or "kegg_pathway_analysis_results"
+
+
+def ensure_output_directory(base_dir: str, class_pair: str, analysis_label: str) -> str:
     results_root = os.path.abspath(base_dir) if base_dir else os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "results")
     )
     output_dir = os.path.join(results_root, "pathway_analysis")
     if class_pair:
         output_dir = os.path.join(output_dir, class_pair)
-    output_dir = os.path.join(output_dir, "kegg_pathway_analysis_results")
+    output_dir = os.path.join(output_dir, sanitize_label_for_path(analysis_label))
     os.makedirs(output_dir, exist_ok=True)
     # Clear existing contents to have one kegg_pathway_analysis_results file per run
     for entry in os.listdir(output_dir):
@@ -36,10 +43,13 @@ def ensure_output_directory(base_dir: str, class_pair: str) -> str:
     return output_dir
 
 
-def perform_kegg_pathway_analysis(
+def perform_enrichment_analysis(
     analysis_results: List[str],
     results_dir: str,
     class_pair: str = "",
+    gene_set: str = DEFAULT_GENE_SET,
+    analysis_label: str = "KEGG pathway analysis",
+    analysis_display_name: str = "KEGG pathway analysis",
     organism: str = DEFAULT_ORGANISM,
 ):
     try:
@@ -57,20 +67,23 @@ def perform_kegg_pathway_analysis(
                     "totalPathways": 0,
                     "inputGeneCount": 0,
                     "classPair": class_pair or None,
+                    "analysisLabel": analysis_label,
+                    "analysisDisplayName": analysis_display_name,
+                    "geneSet": gene_set,
                 },
             }
 
-        enrichment = enrichr(gene_list=sanitized, gene_sets=DEFAULT_GENE_SET, organism=organism)
+        enrichment = enrichr(gene_list=sanitized, gene_sets=gene_set or DEFAULT_GENE_SET, organism=organism)
         results = getattr(enrichment, "results", pd.DataFrame())
 
         run_id = datetime.utcnow().strftime("%Y%m%d-%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
 
         if results.empty:
-            summary = "No KEGG pathways were returned for the provided genes."
-            output_dir = ensure_output_directory(results_dir, class_pair)
+            summary = f"No {analysis_display_name} pathways were returned for the provided genes."
+            output_dir = ensure_output_directory(results_dir, class_pair, analysis_label)
             output_path = os.path.join(
                 output_dir,
-                f"kegg_pathway_analysis_results_{run_id}.csv",
+                f"{sanitize_label_for_path(analysis_label)}_{run_id}.csv",
             )
             results.to_csv(output_path, index=False)
             return {
@@ -84,6 +97,9 @@ def perform_kegg_pathway_analysis(
                     "inputGeneCount": len(sanitized),
                     "classPair": class_pair or None,
                     "runId": run_id,
+                    "analysisLabel": analysis_label,
+                    "analysisDisplayName": analysis_display_name,
+                    "geneSet": gene_set,
                 },
             }
 
@@ -94,10 +110,10 @@ def perform_kegg_pathway_analysis(
         else:
             significant_pathways = pd.DataFrame()
 
-        output_dir = ensure_output_directory(results_dir, class_pair)
+        output_dir = ensure_output_directory(results_dir, class_pair, analysis_label)
         output_path = os.path.join(
             output_dir,
-            f"kegg_pathway_analysis_results_{run_id}.csv",
+            f"{sanitize_label_for_path(analysis_label)}_{run_id}.csv",
         )
 
         export_frame = significant_pathways if not significant_pathways.empty else results
@@ -106,7 +122,7 @@ def perform_kegg_pathway_analysis(
         significant_count = int(significant_pathways.shape[0]) if not significant_pathways.empty else 0
         total_count = int(results.shape[0])
         summary = (
-            f"KEGG pathway analysis completed: {significant_count} of {total_count} pathways "
+            f"{analysis_display_name} completed: {significant_count} of {total_count} pathways "
             f"passed the significance threshold ({SIGNIFICANCE_THRESHOLD})."
         )
 
@@ -121,10 +137,13 @@ def perform_kegg_pathway_analysis(
                 "inputGeneCount": len(sanitized),
                 "classPair": class_pair or None,
                 "runId": run_id,
+                "analysisLabel": analysis_label,
+                "analysisDisplayName": analysis_display_name,
+                "geneSet": gene_set,
             },
         }
     except Exception as exc:
-        summary = "KEGG pathway analysis failed due to an error."
+        summary = f"{analysis_display_name} failed due to an error."
         return {
             "success": False,
             "message": summary,
@@ -137,6 +156,9 @@ def perform_kegg_pathway_analysis(
                 "inputGeneCount": len(analysis_results) if analysis_results else 0,
                 "classPair": class_pair or None,
                 "runId": None,
+                "analysisLabel": analysis_label,
+                "analysisDisplayName": analysis_display_name,
+                "geneSet": gene_set,
             },
         }
 
@@ -145,7 +167,7 @@ if __name__ == "__main__":
         failure_payload = {
             "success": False,
             "message": "Pathway analysis input file was not provided.",
-            "error": "Usage: python pathway_analysis.py <analysis_results.json> [results_dir] [class_pair]",
+            "error": "Usage: python pathway_analysis.py <analysis_results.json> [results_dir] [class_pair] [gene_set] [analysis_label] [analysis_display_name]",
             "data": {
                 "pathwayResults": None,
                 "summary": "Missing input parameters prevented execution.",
@@ -161,6 +183,9 @@ if __name__ == "__main__":
     gene_list_path = sys.argv[1]
     provided_results_dir = sys.argv[2] if len(sys.argv) >= 3 else os.path.join(os.path.dirname(__file__), "..", "results")
     provided_class_pair = sys.argv[3] if len(sys.argv) >= 4 else ""
+    provided_gene_set = sys.argv[4] if len(sys.argv) >= 5 else DEFAULT_GENE_SET
+    provided_analysis_label = sys.argv[5] if len(sys.argv) >= 6 else "KEGG pathway analysis"
+    provided_analysis_display = sys.argv[6] if len(sys.argv) >= 7 else provided_analysis_label
 
     try:
         with open(gene_list_path, "r", encoding="utf-8") as handle:
@@ -174,7 +199,14 @@ if __name__ == "__main__":
         else:
             analysis_results = []
 
-        result = perform_kegg_pathway_analysis(analysis_results, provided_results_dir, provided_class_pair)
+        result = perform_enrichment_analysis(
+            analysis_results,
+            provided_results_dir,
+            provided_class_pair,
+            gene_set=provided_gene_set,
+            analysis_label=provided_analysis_label,
+            analysis_display_name=provided_analysis_display,
+        )
         print(json.dumps(result))
 
         if not result.get("success", False):
@@ -182,7 +214,7 @@ if __name__ == "__main__":
     except Exception as exc:
         failure_payload = {
             "success": False,
-            "message": "KEGG pathway analysis failed to start.",
+            "message": f"{provided_analysis_label} failed to start.",
             "error": str(exc),
             "data": {
                 "pathwayResults": None,
@@ -191,6 +223,9 @@ if __name__ == "__main__":
                 "totalPathways": 0,
                 "inputGeneCount": 0,
                 "classPair": provided_class_pair or None,
+                "analysisLabel": provided_analysis_label,
+                "analysisDisplayName": provided_analysis_display,
+                "geneSet": provided_gene_set,
             },
         }
         print(json.dumps(failure_payload))

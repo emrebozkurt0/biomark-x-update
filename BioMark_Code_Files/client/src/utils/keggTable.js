@@ -34,6 +34,21 @@ const truncateText = (text, maxLength = 80) => {
   return `${text.slice(0, maxLength - 3)}...`;
 };
 
+const formatNumericPrecision = (value) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const normalized = String(value).replace(/,/g, '').trim();
+  if (normalized === '') {
+    return '';
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    return normalized;
+  }
+  return parsed.toFixed(8);
+};
+
 const COLUMN_CANDIDATES = {
   Pathway: ['term', 'pathway', 'pathway name', 'name', 'kegg pathway'],
   Overlap: ['overlap', 'overlap ratio', 'overlap count', 'hit ratio'],
@@ -42,6 +57,8 @@ const COLUMN_CANDIDATES = {
   'Odds ratio': ['odds ratio', 'oddsratio', 'enrichment ratio', 'rich factor'],
   Genes: ['genes', 'gene', 'gene set', 'leading edge', 'leadingedge']
 };
+
+const NUMERIC_COLUMNS = new Set(['Overlap', 'Adjusted p-value', 'Raw p-value', 'Odds ratio']);
 
 export const buildKeggColumns = (table) => {
   const headers = Array.isArray(table?.headers) ? table.headers : [];
@@ -64,7 +81,11 @@ export const buildKeggColumns = (table) => {
           return '';
         }
         const sanitized = sanitizeKeggCell(row[columnIndex]);
-        return formatter ? formatter(sanitized, row) : sanitized;
+        const baseValue = formatter ? formatter(sanitized, row) : sanitized;
+        if (!NUMERIC_COLUMNS.has(label)) {
+          return baseValue;
+        }
+        return formatNumericPrecision(baseValue);
       }
     });
   };

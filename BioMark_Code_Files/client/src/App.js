@@ -16,6 +16,39 @@ import { helpTexts } from './content/helpTexts';
 import LongRunNotificationModal from './components/common/LongRunNotificationModal';
 import { buildKeggColumns, KEGG_PREVIEW_LIMIT } from './utils/keggTable';
 
+const ENRICHMENT_OPTIONS = {
+  KEGG: {
+    analysisType: 'KEGG',
+    geneSet: 'KEGG_2021_Human',
+    analysisLabel: 'kegg_pathway_analysis',
+    analysisDisplayName: 'KEGG Pathway Analysis',
+    buttonLabel: 'Perform KEGG Pathway Analysis',
+  },
+  GO_BP: {
+    analysisType: 'GO_BP',
+    geneSet: 'GO_Biological_Process_2021',
+    analysisLabel: 'go_biological_process',
+    analysisDisplayName: 'GO Biological Process Enrichment',
+    buttonLabel: 'Perform GO Biological Process Enrichment',
+  },
+  GO_CC: {
+    analysisType: 'GO_CC',
+    geneSet: 'GO_Cellular_Component_2021',
+    analysisLabel: 'go_cellular_component',
+    analysisDisplayName: 'GO Cellular Component Enrichment',
+    buttonLabel: 'Perform GO Cellular Component Enrichment',
+  },
+  GO_MF: {
+    analysisType: 'GO_MF',
+    geneSet: 'GO_Molecular_Function_2021',
+    analysisLabel: 'go_molecular_function',
+    analysisDisplayName: 'GO Molecular Function Enrichment',
+    buttonLabel: 'Perform GO Molecular Function Enrichment',
+  },
+};
+
+const ENRICHMENT_ORDER = ['KEGG', 'GO_BP', 'GO_CC', 'GO_MF'];
+
 const normalizeAndSortClasses = (classArray = []) => {
   return classArray
     .map((item) => (item == null ? '' : String(item).trim()))
@@ -114,8 +147,9 @@ function App() {
     modelExplanation: []
   });
   const [linkExists, setLinkExists] = useState({});
-  const [keggProcessing, setKeggProcessing] = useState(false);
-  const [keggAnalyses, setKeggAnalyses] = useState([]);
+  const [enrichmentProcessing, setEnrichmentProcessing] = useState({});
+  const [enrichmentAnalyses, setEnrichmentAnalyses] = useState([]);
+  const [completedEnrichmentTypes, setCompletedEnrichmentTypes] = useState({});
   const [canRunPathwayAnalysis, setCanRunPathwayAnalysis] = useState(false);
   // Parameter States
   const [useDefaultParams, setUseDefaultParams] = useState(true);
@@ -331,6 +365,11 @@ function App() {
     }
     return [];
   }, [mergeMetadata?.name, includedUploads, uploadedInfo?.name]);
+
+  const remainingEnrichmentOptions = useMemo(
+    () => ENRICHMENT_ORDER.filter((key) => !completedEnrichmentTypes[key]),
+    [completedEnrichmentTypes]
+  );
    // Memoize the first 10 columns - prevents recalculation on every render
    const firstTenColumns = useMemo(() => {
     // If allColumns is filled and columns is empty, use the first 10 of allColumns
@@ -1820,13 +1859,15 @@ function App() {
     }
   };
 
-  const handleKEGGAnalysis = async () => {
-    if (keggProcessing) {
+  const handleEnrichmentAnalysis = async (analysisType = 'KEGG') => {
+    const config = ENRICHMENT_OPTIONS[analysisType] || ENRICHMENT_OPTIONS.KEGG;
+
+    if (enrichmentProcessing[analysisType]) {
       return;
     }
 
     if (!Array.isArray(previousAnalyses) || previousAnalyses.length === 0) {
-      setError('Please run at least one analysis before performing KEGG pathway analysis.');
+      setError(`Please run at least one analysis before performing ${config.analysisDisplayName?.toLowerCase() || 'pathway analysis'}.`);
       return;
     }
 
@@ -1911,7 +1952,7 @@ function App() {
     const candidates = [];
     const seenUrls = new Set();
 
-    const fetchKeggResultTable = async (relativePath) => {
+    const fetchEnrichmentResultTable = async (relativePath) => {
       if (!relativePath) {
         return null;
       }
@@ -1938,7 +1979,7 @@ function App() {
         }
         return { headers, rows, delimiter };
       } catch (err) {
-        console.warn('Failed to load KEGG pathway table:', err);
+        console.warn('Failed to load enrichment table:', err);
         return null;
       }
     };
@@ -1976,7 +2017,7 @@ function App() {
     }
 
     if (candidates.length === 0) {
-      setError('No biomarker list found for KEGG pathway analysis. Please combine biomarker rankings first.');
+      setError(config.emptyStateMessage || `No biomarker list found for ${config.analysisDisplayName || 'pathway analysis'}. Please combine biomarker rankings first.`);
       return;
     }
 
@@ -1986,7 +2027,10 @@ function App() {
 
     setError('');
     setInfo('');
-    setKeggProcessing(true);
+    setEnrichmentProcessing((prev) => ({
+      ...prev,
+      [analysisType]: true,
+    }));
 
     let selectedGenes = [];
     let chosenCandidate = null;
@@ -2012,14 +2056,21 @@ function App() {
     }
 
     if (!selectedGenes.length) {
-      console.error('Failed to prepare biomarker genes for KEGG analysis:', lastCandidateError);
-      setKeggProcessing(false);
-      setError('Unable to prepare biomarker list for KEGG analysis. Please ensure an analysis has produced ranked features.');
+      console.error(`Failed to prepare biomarker genes for ${config.analysisDisplayName}:`, lastCandidateError);
+      setEnrichmentProcessing((prev) => ({
+        ...prev,
+        [analysisType]: false,
+      }));
+      setError(`Unable to prepare biomarker list for ${config.analysisDisplayName}. Please ensure an analysis has produced ranked features.`);
       return;
     }
 
     const payload = {
       analysisResults: selectedGenes,
+      analysisType,
+      geneSet: config.geneSet,
+      analysisLabel: config.analysisLabel,
+      analysisDisplayName: config.analysisDisplayName,
     };
 
     let resolvedClasses = Array.isArray(selectedClasses) ? selectedClasses.filter(Boolean) : [];
@@ -2043,13 +2094,13 @@ function App() {
     }
 
     try {
-      const response = await api.post('/pathway-analysis', payload);
+      const response = await api.post('/api/pathway-analysis', payload);
       if (!response?.data) {
-        throw new Error('No response received from KEGG pathway analysis.');
+        throw new Error(`No response received from ${config.analysisDisplayName}.`);
       }
 
       if (!response.data.success) {
-        throw new Error(response.data.message || 'KEGG pathway analysis failed.');
+        throw new Error(response.data.message || `${config.analysisDisplayName} failed.`);
       }
 
       const detail = response.data.data || {};
@@ -2057,13 +2108,17 @@ function App() {
       const classPair = detail.classPair || chosenCandidate?.classPair || null;
       let table = null;
       if (detail.pathwayResults) {
-        table = await fetchKeggResultTable(detail.pathwayResults);
+        table = await fetchEnrichmentResultTable(detail.pathwayResults);
       }
 
-      setKeggAnalyses((prev) => ([
+      setEnrichmentAnalyses((prev) => ([
         ...prev,
         {
           id: detail.runId || Date.now(),
+          analysisType: detail.analysisType || analysisType,
+          analysisLabel: detail.analysisLabel || config.analysisLabel,
+          analysisDisplayName: detail.analysisDisplayName || config.analysisDisplayName,
+          geneSet: detail.geneSet || config.geneSet,
           summary: detail.summary || response.data.message,
           message: response.data.message,
           significantPathwayCount: detail.significantPathwayCount ?? 0,
@@ -2076,17 +2131,23 @@ function App() {
           timestamp: Date.now(),
         },
       ]));
-      setCanRunPathwayAnalysis(false);
+      setCompletedEnrichmentTypes((prev) => ({
+        ...prev,
+        [analysisType]: true,
+      }));
 
       setError('');
-      setInfo(response.data.message || 'KEGG pathway analysis completed.');
+      setInfo(response.data.message || `${config.analysisDisplayName} completed.`);
       setTimeout(() => setInfo(''), 5000);
     } catch (err) {
-      console.error('KEGG pathway analysis request failed:', err);
-      const message = err.response?.data?.message || err.message || 'KEGG pathway analysis failed.';
+      console.error(`${config.analysisDisplayName} request failed:`, err);
+      const message = err.response?.data?.message || err.message || `${config.analysisDisplayName} failed.`;
       setError(message);
     } finally {
-      setKeggProcessing(false);
+      setEnrichmentProcessing((prev) => ({
+        ...prev,
+        [analysisType]: false,
+      }));
     }
   };
 
@@ -2111,8 +2172,9 @@ function App() {
     setselectedClasses([]);
     setSelectedAnalyzes({ statisticalTest: [], dimensionalityReduction: [], classificationAnalysis: [], modelExplanation: [] });
     setUseDefaultParams(true);
-  setCanRunPathwayAnalysis(false);
-  setKeggAnalyses([]);
+    setCanRunPathwayAnalysis(false);
+    setEnrichmentAnalyses([]);
+    setCompletedEnrichmentTypes({});
     // Optionally reset parameters as well.
 
     // Do not re-fetch classes; reuse existing classTable/classDiagramUrl if dataset & columns are unchanged
@@ -2166,9 +2228,10 @@ function App() {
     setDemoMode(false);
     setActiveUploadIndex(0);
     setUploadContexts({});
-  setKeggAnalyses([]);
-  setKeggProcessing(false);
-  setCanRunPathwayAnalysis(false);
+    setEnrichmentAnalyses([]);
+    setEnrichmentProcessing({});
+    setCompletedEnrichmentTypes({});
+    setCanRunPathwayAnalysis(false);
     classCacheRef.current = new Map();
 
     setSelectedAnalyzes({
@@ -2233,8 +2296,9 @@ function App() {
 
     setProcessing(true);
     setError('');
-  setCanRunPathwayAnalysis(false);
-  setKeggAnalyses([]);
+    setCanRunPathwayAnalysis(false);
+    setEnrichmentAnalyses([]);
+    setCompletedEnrichmentTypes({});
 
     console.log("Summarize request - selectedClassPair:", selectedClassPair, "featureCount:", selectedFeatureCount);
 
@@ -2384,6 +2448,10 @@ function App() {
     setClassTable({ class: [] });
     setColumns([]);
     setAllColumns([]);
+    setEnrichmentAnalyses([]);
+    setEnrichmentProcessing({});
+    setCompletedEnrichmentTypes({});
+    setCanRunPathwayAnalysis(false);
 
     // Navigate to login page
     navigate('/login');
@@ -3330,24 +3398,36 @@ function App() {
                     </button>
                   </div>
 
-                  {canRunPathwayAnalysis && keggAnalyses.length === 0 && (
+                  {canRunPathwayAnalysis && remainingEnrichmentOptions.length > 0 && (
                     <div className="kegg-trigger-container">
                       <div className="or-container">
                         <h1 className="or-text">OR</h1>
                       </div>
-                      <button
-                        className="button perform-analysis kegg-trigger-button"
-                        onClick={handleKEGGAnalysis}
-                        disabled={keggProcessing}
-                      >
-                        {keggProcessing ? 'Running KEGG Pathway Analysis...' : 'Perform Pathway Analysis with KEGG'}
-                      </button>
+                      <div className="enrichment-button-grid">
+                        {remainingEnrichmentOptions.map((key) => {
+                          const option = ENRICHMENT_OPTIONS[key];
+                          if (!option) {
+                            return null;
+                          }
+                          const busy = Boolean(enrichmentProcessing[key]);
+                          return (
+                            <button
+                              key={key}
+                              className="button perform-analysis kegg-trigger-button"
+                              onClick={() => handleEnrichmentAnalysis(key)}
+                              disabled={busy}
+                            >
+                              {busy ? `Running ${option.analysisDisplayName}...` : option.buttonLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 
-                  {keggAnalyses.length > 0 && (
+                  {enrichmentAnalyses.length > 0 && (
                     <div className="kegg-analysis-results">
-                      {keggAnalyses.map((entry) => {
+                      {enrichmentAnalyses.map((entry) => {
                         const friendlyPair = entry.classPair ? entry.classPair.split('_').join(' vs ') : 'All Classes';
                         const rows = Array.isArray(entry.table?.rows) ? entry.table.rows : [];
                         const displayedRows = rows.slice(0, KEGG_PREVIEW_LIMIT);
@@ -3361,7 +3441,7 @@ function App() {
                             key={`${entry.id}-${entry.timestamp}`}
                             className="kegg-analysis-card"
                           >
-                            <h3 className="kegg-analysis-title">KEGG Pathway Analysis ({friendlyPair})</h3>
+                            <h3 className="kegg-analysis-title">{entry.analysisDisplayName || 'Pathway Enrichment'} ({friendlyPair})</h3>
                             <p className="kegg-summary-text">{entry.summary}</p>
                             <div className="kegg-stats-row">
                               <span><strong>Input genes:</strong> {entry.inputGeneCount}</span>
@@ -3372,7 +3452,7 @@ function App() {
                             {entry.downloadUrl && (
                               <div className="kegg-download">
                                 <a href={entry.downloadUrl} download className="kegg-download-link">
-                                  Download KEGG results CSV
+                                  Download {entry.analysisDisplayName || 'enrichment'} results CSV
                                 </a>
                               </div>
                             )}
@@ -3539,7 +3619,7 @@ function App() {
                       imagePath: buildUrl(`/${analysis.imagePath}?t=${analysis.timestamp}&v=${analysis.version}`)
                     }))}
                     datasetFileName={datasetNamesForReport}
-                    keggAnalyses={keggAnalyses}
+                    enrichmentAnalyses={enrichmentAnalyses}
                   />
                 </div>
               )}
