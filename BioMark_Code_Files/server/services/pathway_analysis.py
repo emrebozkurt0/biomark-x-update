@@ -7,6 +7,7 @@ from typing import List
 
 import pandas as pd
 from gseapy import enrichr
+import shutil
 
 DEFAULT_GENE_SET = "KEGG_2021_Human"
 DEFAULT_ORGANISM = "Human"
@@ -20,7 +21,18 @@ def ensure_output_directory(base_dir: str, class_pair: str) -> str:
     output_dir = os.path.join(results_root, "pathway_analysis")
     if class_pair:
         output_dir = os.path.join(output_dir, class_pair)
+    output_dir = os.path.join(output_dir, "kegg_pathway_analysis_results")
     os.makedirs(output_dir, exist_ok=True)
+    # Clear existing contents to have one kegg_pathway_analysis_results file per run
+    for entry in os.listdir(output_dir):
+        entry_path = os.path.join(output_dir, entry)
+        try:
+            if os.path.isfile(entry_path) or os.path.islink(entry_path):
+                os.remove(entry_path)
+            elif os.path.isdir(entry_path):
+                shutil.rmtree(entry_path)
+        except Exception:
+            pass
     return output_dir
 
 
