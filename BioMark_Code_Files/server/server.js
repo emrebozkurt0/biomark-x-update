@@ -7,6 +7,9 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const db = require('./db/database');
 const sessionMiddleware = require('./middleware/session');
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/user');
+const authMiddleware = require('./middleware/auth');
 const { sendMail } = require('./mailer');
 const pathwayAnalysisRouter = require('./routes/pathwayAnalysis');
 
@@ -20,7 +23,14 @@ app.use(cors({
 }));
 app.use(sessionMiddleware);
 app.use(express.json()); // Middleware to parse JSON request bodies
-app.use(pathwayAnalysisRouter);
+
+// Authentication routes
+app.use('/auth', authRoutes);
+app.use(authMiddleware); // Middleware to extract user info from token
+
+// User routes (protected)
+app.use('/api/user', userRoutes);
+app.use('/api', pathwayAnalysisRouter);
 
 // Helper function to get the correct python command depending on the OS
 const getPythonCommand = () => {
@@ -184,10 +194,10 @@ app.post('/upload', upload.single('file'), (req, res) => {
     const filePath = req.file.path;
     const uploadId = req.uploadId;
 
-    // Persist upload metadata
+    // Persist upload metadata with user_id if authenticated
     try {
-        db.prepare('INSERT INTO uploads (id, session_id, original_name, server_path) VALUES (?,?,?,?)')
-          .run(uploadId, req.sessionId, req.file.originalname, filePath);
+        db.prepare('INSERT INTO uploads (id, session_id, user_id, original_name, server_path) VALUES (?,?,?,?,?)')
+          .run(uploadId, req.sessionId, req.userId || null, req.file.originalname, filePath);
     } catch (err) {
         console.error('Failed to insert upload record:', err);
     }
@@ -286,16 +296,9 @@ app.post('/merge-files', async (req, res) => {
                     return res.status(500).json({ success: false, error: 'Merged file details are incomplete' });
                 }
 
-                // Persist merged artifact so ownership checks succeed
-                try {
-                    db.prepare('INSERT INTO uploads (id, session_id, original_name, server_path) VALUES (?,?,?,?)')
-                      .run(mergedUploadId, req.sessionId, parsed.mergedFileName || 'Merged Dataset', mergedFilePath);
-                } catch (dbErr) {
-                    console.error('Failed to insert merged upload record:', dbErr);
-                }
-
                 // Build a friendly name and size information using metadata when available
                 let displayName = parsed.mergedFileName || 'Merged Dataset';
+                let originalName = parsed.mergedFileName || 'Merged Dataset';
                 let sizeBytes = typeof parsed.sizeBytes === 'number' ? parsed.sizeBytes : 0;
 
                 try {
@@ -303,6 +306,7 @@ app.post('/merge-files', async (req, res) => {
                         const metadata = JSON.parse(fs.readFileSync(parsed.metadataPath, 'utf8'));
                         const sourceFiles = Object.keys(metadata.input_files || {});
                         if (sourceFiles.length > 0) {
+                            originalName = sourceFiles.join(', '); // Store actual source filenames
                             displayName = `Merged Files (${sourceFiles.join(', ')})`;
                         }
                         if (typeof metadata.size_bytes === 'number') {
@@ -311,6 +315,14 @@ app.post('/merge-files', async (req, res) => {
                     }
                 } catch (err) {
                     console.error('Error reading merge metadata:', err);
+                }
+
+                // Persist merged artifact so ownership checks succeed
+                try {
+                    db.prepare('INSERT INTO uploads (id, session_id, user_id, original_name, server_path) VALUES (?,?,?,?,?)')
+                      .run(mergedUploadId, req.sessionId, req.userId || null, originalName, mergedFilePath);
+                } catch (dbErr) {
+                    console.error('Failed to insert merged upload record:', dbErr);
                 }
 
                 if (sizeBytes === 0 && fs.existsSync(mergedFilePath)) {
@@ -496,9 +508,15 @@ app.post('/analyze', (req, res) => {
     // Ownership check — only apply to user uploads
     if (!isMergedFile) {
         const derivedUploadId = path.basename(filePath).split('_')[0];
-        const uploadOwner = db.prepare('SELECT session_id FROM uploads WHERE id = ?').get(derivedUploadId);
+        const uploadOwner = db.prepare('SELECT session_id, user_id FROM uploads WHERE id = ?').get(derivedUploadId);
         
-        if (!uploadOwner || uploadOwner.session_id !== req.sessionId) {
+        // Check ownership: either session_id matches OR user_id matches
+        const hasAccess = uploadOwner && (
+            uploadOwner.session_id === req.sessionId || 
+            (req.userId && uploadOwner.user_id === req.userId)
+        );
+        
+        if (!hasAccess) {
             return res.status(403).json({ success: false, error: 'Access denied for this file' });
         }
     }
@@ -525,17 +543,19 @@ app.post('/analyze', (req, res) => {
             sampleColumn: SampleColumnName,
             selectedClasses: selectedClasses || [],
             analysisMethods: {
-                statisticalTest: statisticalTest || [],
-                dimensionalityReduction: dimensionalityReduction || [],
-                classificationAnalysis: classificationAnalysis || [],
-                modelExplanation: modelExplanation || []
+                // Map new parameter names to old format for compatibility with AnalysisReport component
+                differential: statisticalTest || [],
+                clustering: dimensionalityReduction || [],
+                classification: [...(classificationAnalysis || []), ...(modelExplanation || [])]
             },
             nonFeatureColumns: nonFeatureColumns || [],
-            isDiffAnalysis: isDiffAnalysis || [...(statisticalTest || []), ...(modelExplanation || [])]
+            isDiffAnalysis: isDiffAnalysis || [...(statisticalTest || []), ...(modelExplanation || [])],
+            numTopFeatures: numTopFeatures || 20,
+            executionTime: 'N/A' // Will be updated when analysis completes
         };
         
-        db.prepare('INSERT INTO analyses (id, upload_id, merged_file_id, session_id, status, analysis_metadata) VALUES (?,?,?,?,?,?)')
-          .run(analysisId, derivedUploadIdForInsert, mergedFileId, req.sessionId, 'running', JSON.stringify(metadata));
+        db.prepare('INSERT INTO analyses (id, upload_id, merged_file_id, session_id, user_id, status, analysis_metadata) VALUES (?,?,?,?,?,?,?)')
+          .run(analysisId, derivedUploadIdForInsert, mergedFileId, req.sessionId, req.userId || null, 'running', JSON.stringify(metadata));
     } catch (err) {
         console.error('Failed to insert analysis record:', err);
     }
@@ -660,10 +680,24 @@ app.post('/analyze', (req, res) => {
         if (code === 0) {
             console.log("output data: ", outputData);
             
-            // Mark analysis as finished in DB
+            // Mark analysis as finished in DB and update metadata with execution time
             try {
-                db.prepare('UPDATE analyses SET status = ?, result_path = ? WHERE id = ?')
-                  .run('finished', outputData.join(','), analysisId);
+                const existingAnalysis = db.prepare('SELECT analysis_metadata FROM analyses WHERE id = ?').get(analysisId);
+                let metadata = {};
+                
+                if (existingAnalysis?.analysis_metadata) {
+                    try {
+                        metadata = JSON.parse(existingAnalysis.analysis_metadata);
+                    } catch (e) {
+                        console.error('Failed to parse existing metadata:', e);
+                    }
+                }
+                
+                // Add execution time to metadata
+                metadata.executionTime = elapsedTime;
+                
+                db.prepare('UPDATE analyses SET status = ?, result_path = ?, analysis_metadata = ? WHERE id = ?')
+                  .run('finished', outputData.join(','), JSON.stringify(metadata), analysisId);
             } catch (err) {
                 console.error('Failed to update analysis record:', err);
             }

@@ -23,13 +23,23 @@ CREATE TABLE IF NOT EXISTS users (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE,
+  password_hash TEXT,
+  username TEXT UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
+  session_id TEXT,
+  user_id TEXT,
   original_name TEXT NOT NULL,
   server_path TEXT NOT NULL,
   uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (session_id) REFERENCES users(session_id) ON DELETE CASCADE
+  FOREIGN KEY (session_id) REFERENCES users(session_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES accounts(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS analyses (
@@ -37,12 +47,14 @@ CREATE TABLE IF NOT EXISTS analyses (
   upload_id TEXT,
   merged_file_id TEXT,
   session_id TEXT,
+  user_id TEXT,
   result_path TEXT,
   status TEXT DEFAULT 'pending',
   analysis_metadata TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE,
-  FOREIGN KEY (session_id) REFERENCES users(session_id) ON DELETE CASCADE
+  FOREIGN KEY (session_id) REFERENCES users(session_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES accounts(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS notification_subscriptions (

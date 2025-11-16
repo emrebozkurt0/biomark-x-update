@@ -10,21 +10,42 @@ export const api = axios.create({
   baseURL: API_BASE
 });
 
-// Attach session ID to every request
+// Attach auth token and session ID to each request
 api.interceptors.request.use((config) => {
-  config.headers = config.headers || {};
-  config.headers['x-session-id'] = getSessionId();
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  const sessionId = getSessionId(); // session for anonymous users
+  if (sessionId) {
+    config.headers['x-session-id'] = sessionId;
+  }
   return config;
 });
 
 // Persist new session IDs issued by the backend
-api.interceptors.response.use((response) => {
-  const incomingId = response.headers['x-session-id'];
-  if (incomingId) {
-    setSessionId(incomingId);
+api.interceptors.response.use(
+  (response) => {
+    const incomingId = response.headers['x-session-id'];
+    if (incomingId) {
+      setSessionId(incomingId);
+    }
+    return response;
+  },
+  (error) => {
+    // Handle 401 Unauthorized (expired or invalid token)
+    if (error.response && error.response.status === 401) {
+      const token = localStorage.getItem('token');
+      // Only clear if we actually had a token (avoid clearing on failed login attempts)
+      if (token && error.config.url !== '/auth/login' && error.config.url !== '/auth/signup') {
+        localStorage.removeItem('token');
+        // Redirect to login page
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
   }
-  return response;
-});
+);
 
 // Helper function to build full API endpoint URLs
 export const buildUrl = (path) => `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;

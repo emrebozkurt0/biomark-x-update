@@ -1,5 +1,6 @@
 import './css/App.css';
 import React, { useState, useRef , useEffect, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import BarChartWithSelection from './components/step4_BarChartWithSelection';
 import AnalysisSelection from './components/step5_AnalysisSelection';
 import ImagePopup from './components/step8-1_ImagePopup'; // Import the component
@@ -8,6 +9,7 @@ import AnalysisReport from './components/step9_AnalysisReport';
 import SearchableColumnList from './components/SearchableColumnList'; // IMPORT THE NEW COMPONENT
 import { api, buildUrl, apiFetch } from './api';
 import UserGuideModal from './components/UserGuideModal';
+import UserMenu from './components/UserMenu';
 import HelpTooltip from './components/common/HelpTooltip';
 import AggregationHelpContent from './components/common/AggregationHelpContent';
 import { helpTexts } from './content/helpTexts';
@@ -22,6 +24,49 @@ const normalizeAndSortClasses = (classArray = []) => {
 };
 
 function App() {
+  const navigate = useNavigate();
+  
+  // Authentication state
+  const [token, setToken] = useState(localStorage.getItem('token') || null);
+
+  // Validate token on app load
+  useEffect(() => {
+    const validateToken = async () => {
+      const storedToken = localStorage.getItem('token');
+      if (storedToken && storedToken.includes('.')) { // Only validate JWT tokens, not guest UUIDs
+        try {
+          await api.get('/auth/me');
+          // Token is valid, keep it
+        } catch (error) {
+          // Token is invalid or expired
+          if (error.response?.status === 401) {
+            console.log('Token expired or invalid, logging out...');
+            localStorage.removeItem('token');
+            setToken(null);
+          }
+        }
+      }
+    };
+    validateToken();
+  }, []);
+
+  // Helper function to check if user is a guest (UUID token) vs logged in (JWT token)
+  const isGuestUser = () => {
+    if (!token) return false;
+    // JWT tokens have 3 parts separated by dots (header.payload.signature)
+    // UUID tokens are just a single string with hyphens
+    return !token.includes('.');
+  };
+
+  // Persist token in api interceptors
+  useEffect(() => {
+    if (token) {
+      localStorage.setItem('token', token);
+    } else {
+      localStorage.removeItem('token');
+    }
+  }, [token]);
+
   // These are global variables. Values defined inside functions are not accessible everywhere. These solve that problem.
   // State Variables
   const [file, setFile] = useState(null);
@@ -2312,6 +2357,38 @@ function App() {
   const handleOpenUserGuide = () => setShowUserGuide(true);
   const handleCloseUserGuide = () => setShowUserGuide(false);
 
+  const handleLogout = () => {
+    // Clear auth token from state and storage
+    setToken(null);
+    localStorage.removeItem('token');
+
+    // Reset upload / file related state
+    setFile(null);
+    setSelectedFilePreviews([]);
+    setUploadedInfo(null);
+
+    // Reset UI step state
+    setShowStepOne(true);
+    setShowStepTwo(false);
+    setShowStepThree(false);
+    setShowStepFour(false);
+    setShowStepFive(false);
+    setShowStepSix(false);
+    setShowStepAnalysis(false);
+
+    // Reset analysis related state
+    setPreviousAnalyses([]);
+    setAnalysisInformation([]);
+    setAnotherAnalysis([0]);
+    setselectedClasses([]);
+    setClassTable({ class: [] });
+    setColumns([]);
+    setAllColumns([]);
+
+    // Navigate to login page
+    navigate('/login');
+  };
+
   // Scroll to the selected step
   useEffect(() => {
     if (showStepAnalysis) {
@@ -2355,10 +2432,19 @@ function App() {
       <header className="app-header">
         <img src={process.env.PUBLIC_URL + "/logo192.png"} alt="Logo" />
         <span>BIOMARKER ANALYSIS TOOL</span>
-        <button className="user-guide-link" onClick={handleOpenUserGuide}>
-          <span>User</span>
-          <span>Guide</span>
-        </button>
+        
+        <div className="header-buttons">
+          <UserMenu 
+            isGuest={isGuestUser()}
+            onNavigateToLogin={() => navigate('/login')}
+            onLogout={handleLogout}
+          />
+
+          <button className="user-guide-link" onClick={handleOpenUserGuide}>
+            <span>User</span>
+            <span>Guide</span>
+          </button>
+        </div>
       </header>
       {/* Render User Guide Modal */}
       {showUserGuide && <UserGuideModal onClose={handleCloseUserGuide} />}

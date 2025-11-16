@@ -428,7 +428,10 @@ const AnalysisReport = ({
             // Load the summary image directly (avoid html2canvas and DOM dependency)
             const img = new Image();
             img.crossOrigin = 'Anonymous';
-            img.src = summaryAnalysis.imagePath;
+            // Use buildUrl to construct proper URL with base URL
+            img.src = summaryAnalysis.imagePath.startsWith('http') 
+              ? summaryAnalysis.imagePath 
+              : buildUrl(`/${summaryAnalysis.imagePath}`);
 
             await new Promise((resolve, reject) => {
               img.onload = () => resolve();
@@ -781,7 +784,10 @@ const AnalysisReport = ({
                     
                     const img = new Image();
                     img.crossOrigin = "Anonymous";
-                    img.src = analysis.images[j].path;
+                    // Use buildUrl to construct proper URL with base URL
+                    img.src = analysis.images[j].path.startsWith('http') 
+                      ? analysis.images[j].path 
+                      : buildUrl(`/${analysis.images[j].path}`);
                     
                     await new Promise((resolve, reject) => {
                       img.onload = () => {

@@ -1,15 +1,65 @@
 import React from 'react';
-import { HashRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import App from './App';
 import ResultsViewer from './components/ResultsViewer';
+import LoginPage from './pages/LoginPage';
+import ProfilePage from './pages/ProfilePage';
+import AnalysisResultsPage from './pages/AnalysisResultsPage';
+import AnalysisDetailPage from './pages/AnalysisDetailPage';
+
+// Protected Route Component
+function ProtectedRoute({ children }) {
+  const token = localStorage.getItem('token');
+  return token ? children : <Navigate to="/biomark/login" replace />;
+}
 
 export default function AppRoutes() {
   return (
-    <HashRouter>
+    <Router basename="/biomark">
       <Routes>
-        <Route path="/" element={<App />} />
-        <Route path="/results/:analysisId" element={<ResultsViewer />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route 
+          path="/" 
+          element={
+            <ProtectedRoute>
+              <App />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/profile" 
+          element={
+            <ProtectedRoute>
+              <ProfilePage />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/my-analyses" 
+          element={
+            <ProtectedRoute>
+              <AnalysisResultsPage />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/analysis/:analysisId" 
+          element={
+            <ProtectedRoute>
+              <AnalysisDetailPage />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/results/:analysisId" 
+          element={
+            <ProtectedRoute>
+              <ResultsViewer />
+            </ProtectedRoute>
+          } 
+        />
       </Routes>
-    </HashRouter>
+    </Router>
   );
 }
+
