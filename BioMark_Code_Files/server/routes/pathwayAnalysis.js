@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const db = require('../db/database');
 
 const router = express.Router();
 
@@ -53,6 +54,7 @@ router.post('/pathway-analysis', async (req, res) => {
     geneSet = null,
     analysisLabel = null,
     analysisDisplayName = null,
+    analysisId = null, // Add analysis ID to associate pathway results
   } = req.body ?? {};
 
   const sanitizedGenes = Array.isArray(analysisResults)
@@ -159,6 +161,64 @@ router.post('/pathway-analysis', async (req, res) => {
           parsed.data.pathwayResults = toRelativeResultPath(parsed.data.pathwayResults);
         }
         parsed.data.analysisType = normalizedType;
+      }
+
+      // Save pathway analysis results to database if analysisId is provided
+      if (analysisId && parsed.success && parsed.data?.pathwayResults) {
+        try {
+          const existingAnalysis = db.prepare('SELECT analysis_metadata FROM analyses WHERE id = ?').get(analysisId);
+          if (existingAnalysis) {
+            let metadata = {};
+            if (existingAnalysis.analysis_metadata) {
+              try {
+                metadata = JSON.parse(existingAnalysis.analysis_metadata);
+              } catch (e) {
+                console.error('Failed to parse existing metadata:', e);
+              }
+            }
+
+            // Initialize pathwayAnalyses array if it doesn't exist
+            if (!metadata.pathwayAnalyses) {
+              metadata.pathwayAnalyses = [];
+            }
+
+            // Add this pathway analysis result
+            metadata.pathwayAnalyses.push({
+              type: normalizedType,
+              analysisLabel: resolvedAnalysisLabel,
+              displayName: resolvedDisplayName,
+              geneSet: resolvedGeneSet,
+              resultPath: parsed.data.pathwayResults,
+              summary: parsed.data.summary || '',
+              significantPathwayCount: parsed.data.significantPathwayCount || 0,
+              totalPathways: parsed.data.totalPathways || 0,
+              inputGeneCount: parsed.data.inputGeneCount || 0,
+              timestamp: new Date().toISOString()
+            });
+
+            // Update the analysis metadata AND append to result_path
+            const currentAnalysis = db.prepare('SELECT result_path FROM analyses WHERE id = ?').get(analysisId);
+            let updatedResultPath = currentAnalysis?.result_path || '';
+            
+            // Append the pathway analysis result to result_path
+            if (parsed.data.pathwayResults) {
+                const relativePath = toRelativeResultPath(parsed.data.pathwayResults);
+                if (updatedResultPath) {
+                    updatedResultPath += ',' + relativePath;
+                } else {
+                    updatedResultPath = relativePath;
+                }
+            }
+            
+            db.prepare('UPDATE analyses SET analysis_metadata = ?, result_path = ? WHERE id = ?')
+              .run(JSON.stringify(metadata), updatedResultPath, analysisId);
+            
+            console.log(`Saved ${normalizedType} pathway analysis to analysis ${analysisId} and added to result_path`);
+          }
+        } catch (dbErr) {
+          console.error('Failed to save pathway analysis to database:', dbErr);
+          // Don't fail the request if database save fails
+        }
       }
 
       if (parsed.success) {

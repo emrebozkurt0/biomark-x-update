@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, buildUrl } from '../api';
 import AnalysisReport from '../components/step9_AnalysisReport';
 import '../css/AnalysisDetailPage.css';
 
@@ -11,6 +11,36 @@ export default function AnalysisDetailPage() {
   const [analysis, setAnalysis] = useState(null);
   const [error, setError] = useState('');
   const [analysisResults, setAnalysisResults] = useState([]);
+  const [enrichmentAnalyses, setEnrichmentAnalyses] = useState([]);
+
+  // Function to fetch and parse CSV data for enrichment analyses
+  const fetchEnrichmentResultTable = async (relativePath) => {
+    if (!relativePath) return null;
+    try {
+      const url = buildUrl(`/${relativePath}`);
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      
+      const rawText = (await response.text()).replace(/^\uFEFF/, '').trim();
+      if (!rawText) return null;
+      
+      const lines = rawText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+      if (lines.length === 0) return null;
+      
+      const delimiter = [';', '\t', ','].find((del) => lines[0].includes(del)) || ',';
+      const cleanCell = (value) => value.replace(/^"|"$/g, '').replace(/^'|'$/g, '').trim();
+      const headers = lines[0].split(delimiter).map(cleanCell);
+      const rows = lines.slice(1).map((line) => line.split(delimiter).map(cleanCell));
+      
+      if (headers.length === 0 || rows.length === 0) {
+        return { headers, rows: [] };
+      }
+      return { headers, rows, delimiter };
+    } catch (err) {
+      console.warn('Failed to load enrichment table:', err);
+      return null;
+    }
+  };
 
   const fetchAnalysisDetail = async () => {
     setLoading(true);
@@ -28,14 +58,25 @@ export default function AnalysisDetailPage() {
         
         // Format the data for the AnalysisReport component
         if (analysisData.result_path) {
-          const images = analysisData.result_path.split(',').map((path, index) => {
-            const trimmedPath = path.trim();
-            return {
-              id: `img-${index}`,
-              path: trimmedPath,  // Full path like "results/xxx/shap/png/image.png"
-              caption: trimmedPath.split('/').pop()  // Just the filename
-            };
-          });
+          // For PDF generation, only include image files (not CSV files)
+          // Also filter out biomarker summary images (top10_biomarkers) to avoid duplication
+          const allPaths = analysisData.result_path.split(',');
+          const images = allPaths
+            .filter(path => {
+              const trimmed = path.trim();
+              const isImage = trimmed.match(/\.(png|jpg|jpeg|gif|svg)$/i);
+              const isBiomarker = trimmed.includes('summary_of_statistical_methods');
+              // Include only image files that are NOT biomarker summaries
+              return isImage && !isBiomarker;
+            })
+            .map((path, index) => {
+              const trimmedPath = path.trim();
+              return {
+                id: `img-${index}`,
+                path: trimmedPath,  // Full path like "results/xxx/shap/png/image.png"
+                caption: trimmedPath.split('/').pop()  // Just the filename
+              };
+            });
 
           setAnalysisResults([{
             title: `Analysis Results`,
@@ -50,6 +91,30 @@ export default function AnalysisDetailPage() {
             },
             parameters: metadata
           }]);
+        }
+
+        // Load enrichment analyses with CSV data
+        if (metadata.pathwayAnalyses && metadata.pathwayAnalyses.length > 0) {
+          const enrichmentPromises = metadata.pathwayAnalyses.map(async (pathway) => {
+            const table = await fetchEnrichmentResultTable(pathway.resultPath);
+            return {
+              analysisType: pathway.type,
+              analysisDisplayName: pathway.displayName,
+              geneSet: pathway.geneSet || '',
+              summary: pathway.summary || '',
+              summary: pathway.summary || '',
+              significantPathwayCount: pathway.significantPathwayCount || 0,
+              totalPathways: pathway.totalPathways || 0,
+              inputGeneCount: pathway.inputGeneCount || 0,
+              downloadUrl: `http://localhost:5003/${pathway.resultPath}`,
+              rawPath: pathway.resultPath,
+              table: table, // Loaded CSV table data
+              timestamp: pathway.timestamp
+            };
+          });
+          
+          const loadedEnrichmentAnalyses = await Promise.all(enrichmentPromises);
+          setEnrichmentAnalyses(loadedEnrichmentAnalyses);
         }
       }
     } catch (err) {
@@ -167,6 +232,28 @@ export default function AnalysisDetailPage() {
                     <span className="info-value">{analysis.metadata.nonFeatureColumns.join(', ')}</span>
                   </div>
                 )}
+                
+                {/* Display biomarker summaries */}
+                {analysis.metadata.biomarkerSummaries && analysis.metadata.biomarkerSummaries.length > 0 && (
+                  <div className="info-item full-width">
+                    <span className="info-label">Biomarker Summaries:</span>
+                    <span className="info-value">
+                      {analysis.metadata.biomarkerSummaries.length} summary/summaries generated
+                      ({analysis.metadata.biomarkerSummaries.map(s => s.classPair).join(', ')})
+                    </span>
+                  </div>
+                )}
+                
+                {/* Display pathway analyses */}
+                {analysis.metadata.pathwayAnalyses && analysis.metadata.pathwayAnalyses.length > 0 && (
+                  <div className="info-item full-width">
+                    <span className="info-label">Pathway Analyses:</span>
+                    <span className="info-value">
+                      {analysis.metadata.pathwayAnalyses.length} pathway analysis/analyses completed
+                      ({analysis.metadata.pathwayAnalyses.map(p => p.displayName).join(', ')})
+                    </span>
+                  </div>
+                )}
               </>
             )}
             
@@ -191,80 +278,167 @@ export default function AnalysisDetailPage() {
           </div>
         </div>
 
-        {/* Analysis Results Images */}
-        <div className="results-section">
-          <h2>Analysis Results</h2>
+        {/* Analysis Results - Split into sections */}
+        {analysis.result_path && (() => {
+          const allPaths = analysis.result_path.split(',').map(p => p.trim()).filter(p => p);
           
-          {analysis.result_path ? (
-            <div className="results-grid">
-              {analysis.result_path.split(',').map((path, index) => {
-                const trimmedPath = path.trim();
-                const isImage = trimmedPath.match(/\.(png|jpg|jpeg|gif|svg)$/i);
-                
-                return (
-                  <div key={index} className="result-card">
-                    {isImage ? (
-                      <>
+          // Separate paths into categories
+          const biomarkerImages = allPaths.filter(p => 
+            p.match(/\.(png|jpg|jpeg|gif|svg)$/i) && p.includes('summary_of_statistical_methods')
+          );
+          const pathwayCSVs = allPaths.filter(p => 
+            p.match(/\.(csv)$/i) && (p.includes('kegg') || p.includes('go_'))
+          );
+          const otherResults = allPaths.filter(p => 
+            !p.includes('summary_of_statistical_methods') && 
+            !(p.match(/\.(csv)$/i) && (p.includes('kegg') || p.includes('go_')))
+          );
+          
+          return (
+            <>
+              {/* Statistical Method Results Section */}
+              {biomarkerImages.length > 0 && (
+                <div className="results-section">
+                  <h2>Statistical Method Results</h2>
+                  <div className="results-grid">
+                    {biomarkerImages.map((path, index) => (
+                      <div key={`biomarker-${index}`} className="result-card">
                         <div className="result-image-wrapper">
                           <img 
-                            src={`http://localhost:5003/${trimmedPath}`} 
-                            alt={`Result ${index + 1}`}
+                            src={`http://localhost:5003/${path}`} 
+                            alt={`Biomarker Summary ${index + 1}`}
                             className="result-image"
                           />
                         </div>
                         <div className="result-caption">
-                          {trimmedPath.split('/').pop()}
+                          {path.split('/').pop()}
                         </div>
                         <a 
-                          href={`http://localhost:5003/${trimmedPath}`} 
+                          href={`http://localhost:5003/${path}`} 
                           target="_blank" 
                           rel="noopener noreferrer"
                           className="view-full-link"
                         >
                           View Full Size &#8594;
                         </a>
-                      </>
-                    ) : (
-                      <div className="result-file-link">
-                        <a 
-                          href={`http://localhost:5003/${trimmedPath}`} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                        >
-                          📄 {trimmedPath.split('/').pop()}
-                        </a>
                       </div>
-                    )}
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p>No results available</p>
-          )}
-        </div>
+                </div>
+              )}
+              
+              {/* Pathway Enrichment Analyses Section */}
+              {pathwayCSVs.length > 0 && (
+                <div className="results-section">
+                  <h2>Pathway Enrichment Analyses</h2>
+                  <div className="results-grid">
+                    {pathwayCSVs.map((path, index) => (
+                      <div key={`pathway-${index}`} className="result-card">
+                        <div className="result-file-link">
+                          <a 
+                            href={`http://localhost:5003/${path}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="download-csv-link"
+                          >
+                            📊 Download: {path.split('/').pop()}
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Other Analysis Results Section */}
+              {otherResults.length > 0 && (
+                <div className="results-section">
+                  <h2>Analysis Results</h2>
+                  <div className="results-grid">
+                    {otherResults.map((path, index) => {
+                      const isImage = path.match(/\.(png|jpg|jpeg|gif|svg)$/i);
+                      const isCSV = path.match(/\.(csv)$/i);
+                      
+                      return (
+                        <div key={`other-${index}`} className="result-card">
+                          {isImage ? (
+                            <>
+                              <div className="result-image-wrapper">
+                                <img 
+                                  src={`http://localhost:5003/${path}`} 
+                                  alt={`Result ${index + 1}`}
+                                  className="result-image"
+                                />
+                              </div>
+                              <div className="result-caption">
+                                {path.split('/').pop()}
+                              </div>
+                              <a 
+                                href={`http://localhost:5003/${path}`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="view-full-link"
+                              >
+                                View Full Size &#8594;
+                              </a>
+                            </>
+                          ) : (
+                            <div className="result-file-link">
+                              <a 
+                                href={`http://localhost:5003/${path}`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="download-csv-link"
+                              >
+                                📊 {isCSV ? 'Download: ' : '📄 '}{path.split('/').pop()}
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Report Generation Section */}
-        {analysisResults.length > 0 && (
-          <div className="report-section">
-            <AnalysisReport
-              analysisResults={analysisResults}
-              analysisDate={formatDate(analysis.created_at)}
-              executionTime={analysis.metadata?.executionTime || 'N/A'}
-              selectedClasses={analysis.metadata?.selectedClasses || []}
-              selectedIllnessColumn={analysis.metadata?.illnessColumn || ''}
-              selectedAnalyzes={[
-                ...(analysis.metadata?.analysisMethods?.differential || []),
-                ...(analysis.metadata?.analysisMethods?.clustering || []),
-                ...(analysis.metadata?.analysisMethods?.classification || [])
-              ]}
-              featureCount={20}
-              summaryImagePath=""
-              summarizeAnalyses={[]}
-              datasetFileName={analysis.filename || 'Unknown'}
-            />
-          </div>
-        )}
+        {analysisResults.length > 0 && (() => {
+          // Transform biomarker summaries for AnalysisReport component
+          const summarizeAnalyses = (analysis.metadata?.biomarkerSummaries || []).map(summary => ({
+            classPair: summary.classPair,
+            imagePath: summary.imagePath,
+            timestamp: summary.timestamp,
+            version: 1,
+            featureCount: summary.featureCount || 10,
+            aggregationLabel: summary.aggregationLabel || '',
+            csvPath: summary.csvPath || null
+          }));
+          
+          return (
+            <div className="report-section">
+              <AnalysisReport
+                analysisResults={analysisResults}
+                analysisDate={formatDate(analysis.created_at)}
+                executionTime={analysis.metadata?.executionTime || 'N/A'}
+                selectedClasses={analysis.metadata?.selectedClasses || []}
+                selectedIllnessColumn={analysis.metadata?.illnessColumn || ''}
+                selectedAnalyzes={[
+                  ...(analysis.metadata?.analysisMethods?.differential || []),
+                  ...(analysis.metadata?.analysisMethods?.clustering || []),
+                  ...(analysis.metadata?.analysisMethods?.classification || [])
+                ]}
+                featureCount={20}
+                summaryImagePath=""
+                summarizeAnalyses={summarizeAnalyses}
+                enrichmentAnalyses={enrichmentAnalyses}
+                datasetFileName={analysis.filename || 'Unknown'}
+              />
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

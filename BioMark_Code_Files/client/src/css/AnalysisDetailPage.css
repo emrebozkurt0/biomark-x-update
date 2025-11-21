@@ -64,6 +64,10 @@
   gap: 5px;
 }
 
+.info-item.full-width {
+  grid-column: 1 / -1;
+}
+
 .info-label {
   font-size: 13px;
   color: #666;
@@ -191,10 +195,10 @@
 }
 
 .report-section {
-  background: white;
-  border-radius: 12px;
-  padding: 30px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
 }
 
 .error-message {

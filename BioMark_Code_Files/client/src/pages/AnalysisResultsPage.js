@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, buildUrl } from '../api';
 import AnalysisReport from '../components/step9_AnalysisReport';
 import '../css/AnalysisResultsPage.css';
 
@@ -11,6 +11,35 @@ export default function AnalysisResultsPage() {
   const [error, setError] = useState('');
   const [reportData, setReportData] = useState(null);
   const reportTriggerRef = useRef(null);
+
+  // Function to fetch and parse CSV data for enrichment analyses
+  const fetchEnrichmentResultTable = async (relativePath) => {
+    if (!relativePath) return null;
+    try {
+      const url = buildUrl(`/${relativePath}`);
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      
+      const rawText = (await response.text()).replace(/^\uFEFF/, '').trim();
+      if (!rawText) return null;
+      
+      const lines = rawText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+      if (lines.length === 0) return null;
+      
+      const delimiter = [';', '\t', ','].find((del) => lines[0].includes(del)) || ',';
+      const cleanCell = (value) => value.replace(/^"|"$/g, '').replace(/^'|'$/g, '').trim();
+      const headers = lines[0].split(delimiter).map(cleanCell);
+      const rows = lines.slice(1).map((line) => line.split(delimiter).map(cleanCell));
+      
+      if (headers.length === 0 || rows.length === 0) {
+        return { headers, rows: [] };
+      }
+      return { headers, rows, delimiter };
+    } catch (err) {
+      console.warn('Failed to load enrichment table:', err);
+      return null;
+    }
+  };
 
   useEffect(() => {
     fetchAnalyses();
@@ -91,14 +120,25 @@ export default function AnalysisResultsPage() {
       const metadata = fullAnalysis.metadata || {};
 
       // Prepare report data from the analysis with proper metadata
-      const images = fullAnalysis.result_path.split(',').map((path, index) => {
-        const trimmedPath = path.trim();
-        return {
-          id: `img-${index}`,
-          path: trimmedPath,
-          caption: trimmedPath.split('/').pop()
-        };
-      });
+      // For PDF generation, only include image files (not CSV files)
+      // Also filter out biomarker summary images (top10_biomarkers) to avoid duplication
+      const allPaths = fullAnalysis.result_path.split(',');
+      const images = allPaths
+        .filter(path => {
+          const trimmed = path.trim();
+          const isImage = trimmed.match(/\.(png|jpg|jpeg|gif|svg)$/i);
+          const isBiomarker = trimmed.includes('summary_of_statistical_methods');
+          // Include only image files that are NOT biomarker summaries
+          return isImage && !isBiomarker;
+        })
+        .map((path, index) => {
+          const trimmedPath = path.trim();
+          return {
+            id: `img-${index}`,
+            path: trimmedPath,
+            caption: trimmedPath.split('/').pop()
+          };
+        });
 
       const analysisResults = [{
         title: `Analysis Results`,
@@ -114,6 +154,39 @@ export default function AnalysisResultsPage() {
         parameters: metadata
       }];
 
+      // Extract biomarker summaries and pathway analyses from metadata
+      const biomarkerSummaries = metadata.biomarkerSummaries || [];
+      const pathwayAnalyses = metadata.pathwayAnalyses || [];
+      
+      // Transform biomarkerSummaries to summarizeAnalyses format expected by AnalysisReport
+      const summarizeAnalyses = biomarkerSummaries.map(summary => ({
+        classPair: summary.classPair,
+        imagePath: summary.imagePath,
+        timestamp: summary.timestamp,
+        featureCount: summary.featureCount,
+        aggregationLabel: summary.aggregationLabel || '',
+        csvPath: summary.csvPath
+      }));
+      
+      // Transform pathwayAnalyses to enrichmentAnalyses format - load CSV data
+      const enrichmentPromises = pathwayAnalyses.map(async (pathway) => {
+        const table = await fetchEnrichmentResultTable(pathway.resultPath);
+        return {
+          analysisType: pathway.type,
+          analysisDisplayName: pathway.displayName,
+          geneSet: pathway.geneSet || '',
+          summary: pathway.summary || '',
+          significantPathwayCount: pathway.significantPathwayCount || 0,
+          totalPathways: pathway.totalPathways || 0,
+          inputGeneCount: pathway.inputGeneCount || 0,
+          downloadUrl: `http://localhost:5003/${pathway.resultPath}`,
+          rawPath: pathway.resultPath,
+          table: table, // Loaded CSV table data
+        };
+      });
+      
+      const enrichmentAnalyses = await Promise.all(enrichmentPromises);
+      
       setReportData({
         analysisResults,
         analysisDate: formatDate(fullAnalysis.created_at),
@@ -127,7 +200,9 @@ export default function AnalysisResultsPage() {
           ...(metadata.analysisMethods?.classification || [])
         ],
         featureCount: 20,
-        nonFeatureColumns: metadata.nonFeatureColumns || []
+        nonFeatureColumns: metadata.nonFeatureColumns || [],
+        summarizeAnalyses,
+        enrichmentAnalyses
       });
     } catch (err) {
       console.error('Error preparing report:', err);
@@ -215,7 +290,8 @@ export default function AnalysisResultsPage() {
             selectedAnalyzes={reportData.selectedAnalyzes}
             featureCount={reportData.featureCount}
             summaryImagePath=""
-            summarizeAnalyses={[]}
+            summarizeAnalyses={reportData.summarizeAnalyses || []}
+            enrichmentAnalyses={reportData.enrichmentAnalyses || []}
             datasetFileName={reportData.filename}
           />
         </div>

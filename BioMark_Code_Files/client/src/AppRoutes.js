@@ -10,7 +10,7 @@ import AnalysisDetailPage from './pages/AnalysisDetailPage';
 // Protected Route Component
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('token');
-  return token ? children : <Navigate to="/biomark/login" replace />;
+  return token ? children : <Navigate to="/login" replace />;
 }
 
 export default function AppRoutes() {

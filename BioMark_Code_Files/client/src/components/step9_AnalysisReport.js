@@ -680,8 +680,25 @@ const AnalysisReport = ({
             pdf.setFont('helvetica', 'italic');
             pdf.setFontSize(9);
             pdf.setTextColor(110, 110, 110);
-            pdf.text('No pathway table was returned for this run.', marginLeft, yPosition);
-            yPosition += lineHeight;
+            
+            // Check if we have a download URL to provide
+            if (entry.downloadUrl || entry.rawPath) {
+              pdf.text('Table preview not available. Download the CSV file to view full results.', marginLeft, yPosition);
+              yPosition += lineHeight;
+              
+              if (entry.downloadUrl) {
+                pdf.setFont('helvetica', 'bold');
+                pdf.setTextColor(47, 79, 181);
+                const downloadLink = entry.downloadUrl || `http://localhost:5003/${entry.rawPath}`;
+                pdf.textWithLink('Download CSV', marginLeft, yPosition, { url: downloadLink });
+                yPosition += lineHeight;
+                pdf.setFont('helvetica', 'italic');
+                pdf.setTextColor(110, 110, 110);
+              }
+            } else {
+              pdf.text('No pathway table was returned for this run.', marginLeft, yPosition);
+              yPosition += lineHeight;
+            }
           } else {
             if (yPosition > pageHeight - 20) {
               pdf.addPage();
@@ -727,7 +744,12 @@ const AnalysisReport = ({
       }
 
       // ----- DETAILED ANALYSIS RESULTS (Charts) -----
-      if (Object.keys(groupedAnalyses).length > 0) {
+      // Check if there are any images to display (excluding biomarker summaries which are already shown)
+      const hasNonBiomarkerImages = Object.values(groupedAnalyses).some(analysesInGroup => 
+        analysesInGroup.some(analysis => analysis.images && analysis.images.length > 0)
+      );
+      
+      if (Object.keys(groupedAnalyses).length > 0 && hasNonBiomarkerImages) {
         if (yPosition > pageHeight - 40) { pdf.addPage(); yPosition = topMargin - 20; }
         // Section title
         pdf.setFontSize(16);

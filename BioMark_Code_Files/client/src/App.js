@@ -149,6 +149,7 @@ function App() {
   const [linkExists, setLinkExists] = useState({});
   const [enrichmentProcessing, setEnrichmentProcessing] = useState({});
   const [enrichmentAnalyses, setEnrichmentAnalyses] = useState([]);
+  const [currentAnalysisId, setCurrentAnalysisId] = useState(null); // Track current analysis ID for pathway analysis
   const [completedEnrichmentTypes, setCompletedEnrichmentTypes] = useState({});
   const [canRunPathwayAnalysis, setCanRunPathwayAnalysis] = useState(false);
   // Parameter States
@@ -1831,13 +1832,18 @@ function App() {
         showCategoricalEncodingInfo(response.data.categoricalEncodingInfo);
       }
       if (response.data.success) {
+        // Store the analysis ID for pathway analysis
+        if (response.data.analysisId) {
+          setCurrentAnalysisId(response.data.analysisId);
+        }
         const newAnalysis = {
           results: response.data.imagePaths || [],
           time: response.data.elapsedTime || "N/A",
           date: new Date().toLocaleString('en-GB'),
           parameters: payload,
           analysisInfo: { ...selectedAnalyzes },
-          bestParams: response.data.bestParams || null
+          bestParams: response.data.bestParams || null,
+          analysisId: response.data.analysisId || null
         };
         const paths2 = response.data.imagePaths || [];
         const hasAfterFSFolder2 = paths2.some(p => /AfterFeatureSelection/i.test(p));
@@ -2071,6 +2077,7 @@ function App() {
       geneSet: config.geneSet,
       analysisLabel: config.analysisLabel,
       analysisDisplayName: config.analysisDisplayName,
+      analysisId: currentAnalysisId, // Pass the current analysis ID
     };
 
     let resolvedClasses = Array.isArray(selectedClasses) ? selectedClasses.filter(Boolean) : [];
@@ -2321,7 +2328,8 @@ function App() {
         // Optional aggregation overrides for combine step
         aggregationMethod: aggregationMethod || undefined,
         aggregationWeights: aggregationWeights || undefined,
-        rrfK: typeof rrfK === 'number' ? rrfK : undefined
+        rrfK: typeof rrfK === 'number' ? rrfK : undefined,
+        analysisId: currentAnalysisId // Pass current analysis ID
       });
       
       console.log("Summarize response:", response.data);

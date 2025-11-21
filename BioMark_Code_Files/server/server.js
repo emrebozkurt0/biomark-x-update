@@ -831,6 +831,7 @@ app.post('/summarize_statistical_methods', (req, res) => {
     const featureCount = req.body.featureCount || 10; // Default is 10
     const filePath = req.body.filePath;
     const selectedClassPair = req.body.selectedClassPair; // User-selected class pair (optional)
+    const analysisId = req.body.analysisId; // Analysis ID to associate summary with
     
     // Ownership check: ensure the request's session owns this file
     try {
@@ -905,6 +906,47 @@ app.post('/summarize_statistical_methods', (req, res) => {
                 
                 // Best effort legacy CSV path
                 const legacyCsvPath = path.join('results', fileName, 'ranked_features_df.csv');
+                
+                // Save biomarker summary to database if analysisId provided
+                if (analysisId) {
+                    try {
+                        const existingAnalysis = db.prepare('SELECT analysis_metadata FROM analyses WHERE id = ?').get(analysisId);
+                        if (existingAnalysis) {
+                            let metadata = {};
+                            if (existingAnalysis.analysis_metadata) {
+                                try {
+                                    metadata = JSON.parse(existingAnalysis.analysis_metadata);
+                                } catch (e) {
+                                    console.error('Failed to parse existing metadata:', e);
+                                }
+                            }
+                            
+                            // Initialize biomarkerSummaries array if it doesn't exist
+                            if (!metadata.biomarkerSummaries) {
+                                metadata.biomarkerSummaries = [];
+                            }
+                            
+                            // Add this biomarker summary result
+                            metadata.biomarkerSummaries.push({
+                                classPair: 'Summary',
+                                imagePath: cleanedOutput,
+                                csvPath: legacyCsvPath,
+                                featureCount: featureCount,
+                                timestamp: new Date().toISOString()
+                            });
+                            
+                            // Update the analysis metadata
+                            db.prepare('UPDATE analyses SET analysis_metadata = ? WHERE id = ?')
+                              .run(JSON.stringify(metadata), analysisId);
+                            
+                            console.log(`Saved biomarker summary to analysis ${analysisId}`);
+                        }
+                    } catch (dbErr) {
+                        console.error('Failed to save biomarker summary to database:', dbErr);
+                        // Don't fail the request if database save fails
+                    }
+                }
+                
                 res.json({ 
                     success: true, 
                     imagePath: cleanedOutput,
@@ -1073,6 +1115,65 @@ app.post('/summarize_statistical_methods', (req, res) => {
                 }
                 const cleanedOutput = outputData.trim();
                 console.log(`Python process output: ${cleanedOutput}`);
+                
+                // Save biomarker summary to database if analysisId provided
+                if (analysisId) {
+                    try {
+                        const existingAnalysis = db.prepare('SELECT analysis_metadata FROM analyses WHERE id = ?').get(analysisId);
+                        if (existingAnalysis) {
+                            let metadata = {};
+                            if (existingAnalysis.analysis_metadata) {
+                                try {
+                                    metadata = JSON.parse(existingAnalysis.analysis_metadata);
+                                } catch (e) {
+                                    console.error('Failed to parse existing metadata:', e);
+                                }
+                            }
+                            
+                            // Initialize biomarkerSummaries array if it doesn't exist
+                            if (!metadata.biomarkerSummaries) {
+                                metadata.biomarkerSummaries = [];
+                            }
+                            
+                            // Remove any previous summary for the same class pair and aggregation label
+                            metadata.biomarkerSummaries = metadata.biomarkerSummaries.filter(
+                                s => !(s.classPair === classToUse && (s.aggregationLabel || '') === (aggLabel || ''))
+                            );
+                            
+                            // Add this biomarker summary result
+                            metadata.biomarkerSummaries.push({
+                                classPair: classToUse,
+                                imagePath: cleanedOutput,
+                                csvPath: csvPath,
+                                featureCount: featureCount,
+                                aggregationLabel: aggLabel || '',
+                                timestamp: new Date().toISOString()
+                            });
+                            
+                            // Update the analysis metadata AND append to result_path
+                            const currentAnalysis = db.prepare('SELECT result_path FROM analyses WHERE id = ?').get(analysisId);
+                            let updatedResultPath = currentAnalysis?.result_path || '';
+                            
+                            // Append the biomarker summary image to result_path
+                            if (cleanedOutput) {
+                                if (updatedResultPath) {
+                                    updatedResultPath += ',' + cleanedOutput;
+                                } else {
+                                    updatedResultPath = cleanedOutput;
+                                }
+                            }
+                            
+                            db.prepare('UPDATE analyses SET analysis_metadata = ?, result_path = ? WHERE id = ?')
+                              .run(JSON.stringify(metadata), updatedResultPath, analysisId);
+                            
+                            console.log(`Saved biomarker summary to analysis ${analysisId} and added to result_path`);
+                        }
+                    } catch (dbErr) {
+                        console.error('Failed to save biomarker summary to database:', dbErr);
+                        // Don't fail the request if database save fails
+                    }
+                }
+                
                 res.json({ success: true, imagePath: cleanedOutput, selectedClassPair: classToUse, aggregationLabel: aggLabel, csvPath });
             });
         };
