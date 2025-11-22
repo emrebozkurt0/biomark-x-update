@@ -12,6 +12,7 @@ const userRoutes = require('./routes/user');
 const authMiddleware = require('./middleware/auth');
 const { sendMail } = require('./mailer');
 const pathwayAnalysisRouter = require('./routes/pathwayAnalysis');
+const biomarkerValidationRouter = require('./routes/biomarkerValidation');
 
 const { spawn } = require('child_process');
 
@@ -31,6 +32,7 @@ app.use(authMiddleware); // Middleware to extract user info from token
 // User routes (protected)
 app.use('/api/user', userRoutes);
 app.use('/api', pathwayAnalysisRouter);
+app.use('/api', biomarkerValidationRouter);
 
 // Helper function to get the correct python command depending on the OS
 const getPythonCommand = () => {

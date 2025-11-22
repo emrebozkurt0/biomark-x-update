@@ -102,7 +102,6 @@ export default function AnalysisDetailPage() {
               analysisDisplayName: pathway.displayName,
               geneSet: pathway.geneSet || '',
               summary: pathway.summary || '',
-              summary: pathway.summary || '',
               significantPathwayCount: pathway.significantPathwayCount || 0,
               totalPathways: pathway.totalPathways || 0,
               inputGeneCount: pathway.inputGeneCount || 0,

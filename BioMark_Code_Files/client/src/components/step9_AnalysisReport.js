@@ -103,7 +103,15 @@ const AnalysisReport = ({
   summaryImagePath, // This prop is related to summarizeAnalyses and its structure is preserved
   summarizeAnalyses, // This prop's structure is good and preserved
   datasetFileName, // Name(s) of the file(s) used in the analysis (string or string[])
-  enrichmentAnalyses = []
+  enrichmentAnalyses = [],
+  onValidateBiomarkers,
+  biomarkerValidationResult,
+  biomarkerValidationError,
+  biomarkerValidationLoading = false,
+  canValidateBiomarkers = true,
+  validationGeneCap,
+  validationGeneOptions = [],
+  onValidationGeneCapChange
 }) => {
   // State for loading overlay
   const [loading, setLoading] = useState(false);
@@ -141,9 +149,26 @@ const AnalysisReport = ({
 
   const hasSummariesSection = Array.isArray(summarizeAnalyses) && summarizeAnalyses.length > 0;
   const hasEnrichmentAnalyses = Array.isArray(enrichmentAnalyses) && enrichmentAnalyses.length > 0;
-  const statisticalSectionNumber = hasSummariesSection ? 2 : null;
-  const enrichmentSectionNumber = hasEnrichmentAnalyses ? (hasSummariesSection ? 3 : 2) : null;
-  const analysisResultsSectionNumber = 1 + (hasSummariesSection ? 1 : 0) + (hasEnrichmentAnalyses ? 1 : 0) + 1;
+  const hasValidationSection = Boolean(biomarkerValidationResult?.results?.length);
+
+  let nextSectionNumber = 2;
+  const statisticalSectionNumber = hasSummariesSection ? nextSectionNumber++ : null;
+  const enrichmentSectionNumber = hasEnrichmentAnalyses ? nextSectionNumber++ : null;
+  const analysisResultsSectionNumber = nextSectionNumber;
+
+  const friendlyClassPair = (value) => (value ? value.split('_').join(' vs ') : 'All Classes');
+  const truncateText = (text, max = 220) => {
+    if (!text) return '';
+    return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+  };
+  const formatScore = (score) => {
+    if (typeof score !== 'number' || Number.isNaN(score)) {
+      return null;
+    }
+    return score >= 1 ? score.toFixed(2) : score.toPrecision(2);
+  };
+  const validationClassPairLabel = biomarkerValidationResult?.classPair ? friendlyClassPair(biomarkerValidationResult.classPair) : null;
+  const validationTimestamp = biomarkerValidationResult?.timestamp ? new Date(biomarkerValidationResult.timestamp).toLocaleString() : null;
   
   // Load logo as DataURL for PDF
   useEffect(() => {
@@ -929,8 +954,131 @@ const AnalysisReport = ({
   // Version info
   const version = "1.0.0";
 
+  const showValidationControls = Boolean(
+    typeof onValidateBiomarkers === 'function'
+      && canValidateBiomarkers
+      && (!biomarkerValidationResult || biomarkerValidationLoading)
+  );
+
   return (
     <div>
+      {showValidationControls && (
+        <div className="validation-action-bar">
+          <label className="validation-select-label">
+            Max genes per validation
+            <select
+              value={validationGeneCap ?? ''}
+              onChange={onValidationGeneCapChange}
+              disabled={biomarkerValidationLoading}
+            >
+              {validationGeneOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="biomarker-validation-button"
+            onClick={onValidateBiomarkers}
+            disabled={biomarkerValidationLoading}
+          >
+            {biomarkerValidationLoading ? 'Validating Biomarkers...' : 'Validate Biomarkers Externally'}
+          </button>
+          {biomarkerValidationError && (
+            <div className="validation-status-row">
+              <span className="validation-error-text">{biomarkerValidationError}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasValidationSection && biomarkerValidationResult?.results && (
+        <div className="validation-results-panel">
+          <div className="validation-results-header">
+            <div>
+              <h3>External Biomarker Validation</h3>
+              {validationClassPairLabel && (
+                <p className="validation-meta-line">Class pair: {validationClassPairLabel}</p>
+              )}
+              {validationTimestamp && (
+                <p className="validation-meta-line">Validated on: {validationTimestamp}</p>
+              )}
+            </div>
+            <div className="validation-results-meta">
+              {biomarkerValidationResult?.geneCount && (
+                <span>{biomarkerValidationResult.geneCount} genes checked</span>
+              )}
+              {biomarkerValidationResult?.maxGenes && (
+                <span>Limit: {biomarkerValidationResult.maxGenes}</span>
+              )}
+            </div>
+          </div>
+          <div className="validation-gene-grid">
+            {biomarkerValidationResult.results.map((entry) => {
+              const hasSources = Array.isArray(entry.sources) && entry.sources.length > 0;
+              return (
+                <div key={entry.gene} className="validation-gene-card">
+                  <div className="validation-gene-title">
+                    <strong>{entry.matchedSymbol || entry.gene}</strong>
+                    {entry.name && <span className="validation-gene-name">{entry.name}</span>}
+                  </div>
+                  {entry.summary && (
+                    <p className="validation-gene-summary">{truncateText(entry.summary, 320)}</p>
+                  )}
+                  {hasSources ? (
+                    <div className="validation-source-grid">
+                      {entry.sources.map((source, sourceIdx) => (
+                        <div key={`${entry.gene}-${source.source || sourceIdx}`} className="validation-source-card">
+                          <div className="validation-source-title">
+                            <span>{source.source || 'Evidence'}</span>
+                            {source.link && (
+                              <a href={source.link} target="_blank" rel="noreferrer">Open</a>
+                            )}
+                          </div>
+                          <ul>
+                            {(source.items || []).map((item, itemIdx) => {
+                              const evidenceIds = Array.isArray(item.evidence) ? item.evidence : [];
+                              const scoreLabel = formatScore(item.score);
+                              return (
+                                <li key={`${entry.gene}-${sourceIdx}-${itemIdx}`}>
+                                  <div className="validation-evidence-label">
+                                    {item.url ? (
+                                      <a href={item.url} target="_blank" rel="noreferrer">{item.label || item.url}</a>
+                                    ) : (
+                                      item.label || 'Evidence item'
+                                    )}
+                                  </div>
+                                  <div className="validation-evidence-meta">
+                                    {item.detail && <span>{item.detail}</span>}
+                                    {scoreLabel && <span>Score: {scoreLabel}</span>}
+                                    {item.pubmed && (
+                                      <a href={`https://pubmed.ncbi.nlm.nih.gov/${item.pubmed}/`} target="_blank" rel="noreferrer">
+                                        PubMed {item.pubmed}
+                                      </a>
+                                    )}
+                                  </div>
+                                  {item.snippet && (
+                                    <p className="validation-evidence-snippet">{truncateText(item.snippet, 220)}</p>
+                                  )}
+                                  {evidenceIds.length > 0 && (
+                                    <p className="validation-evidence-snippet">PMIDs: {evidenceIds.join(', ')}</p>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="validation-gene-summary">No external evidence found for this gene yet.</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '6px' }}>
         <button 
           className="generate-report-button" 

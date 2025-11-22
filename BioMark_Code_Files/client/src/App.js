@@ -48,6 +48,110 @@ const ENRICHMENT_OPTIONS = {
 };
 
 const ENRICHMENT_ORDER = ['KEGG', 'GO_BP', 'GO_CC', 'GO_MF'];
+const VALIDATION_GENE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+const DEFAULT_VALIDATION_GENE_LIMIT = VALIDATION_GENE_OPTIONS[0];
+
+const stripBom = (text = '') => text.replace(/^[\uFEFF\u200B]+/, '');
+
+const extractGenesFromCsv = (csvText, limit = DEFAULT_VALIDATION_GENE_LIMIT) => {
+  const sanitized = stripBom(csvText || '');
+  const lines = sanitized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length <= 1) {
+    return [];
+  }
+
+  const delimiter = lines[0].includes(';') ? ';' : ',';
+  const cleanCell = (value = '') => value.replace(/^"|"$/g, '').replace(/^'|'$/g, '').trim();
+  const headers = lines[0].split(delimiter).map(cleanCell);
+  const normalizeHeader = (header = '') => header.replace(/[_\s]+/g, ' ').trim().toLowerCase();
+  const overallIndex = headers.findIndex((header) => normalizeHeader(header) === 'overall score');
+
+  const rows = lines.slice(1).map((line, index) => {
+    const parts = line.split(delimiter).map(cleanCell);
+    const gene = parts[0] || '';
+    const rawScore = overallIndex >= 0 ? parts[overallIndex] : '';
+    const numericScore = overallIndex >= 0 ? Number(rawScore) : Number.NaN;
+    return {
+      gene,
+      score: Number.isFinite(numericScore) ? numericScore : null,
+      originalIndex: index,
+    };
+  });
+
+  const sortedRows = rows.some((row) => row.score !== null)
+    ? [...rows].sort((a, b) => {
+        const scoreA = a.score === null ? Number.POSITIVE_INFINITY : a.score;
+        const scoreB = b.score === null ? Number.POSITIVE_INFINITY : b.score;
+        if (scoreA !== scoreB) {
+          return scoreA - scoreB;
+        }
+        return a.originalIndex - b.originalIndex;
+      })
+    : rows;
+
+  const genes = [];
+  const seen = new Set();
+
+  for (let i = 0; i < sortedRows.length; i += 1) {
+    const gene = (sortedRows[i].gene || '').trim();
+    if (!gene) {
+      continue;
+    }
+    const dedupeKey = gene.toUpperCase();
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    genes.push(gene);
+    if (limit && limit > 0 && genes.length >= limit) {
+      break;
+    }
+  }
+
+  return genes;
+};
+
+const parseClassPairFromUrl = (urlString) => {
+  if (!urlString) {
+    return null;
+  }
+  try {
+    const { pathname } = new URL(urlString);
+    const segments = pathname.split('/').filter(Boolean);
+    const rankingIndex = segments.indexOf('feature_ranking');
+    if (rankingIndex >= 0 && segments[rankingIndex + 1]) {
+      return segments[rankingIndex + 1];
+    }
+    const summaryIndex = segments.indexOf('summaryStatisticalMethods');
+    if (summaryIndex >= 0 && segments[summaryIndex + 1] && !['png', 'pdf'].includes(segments[summaryIndex + 1])) {
+      return segments[summaryIndex + 1];
+    }
+  } catch (err) {
+    console.warn('Failed to parse class pair from URL:', urlString, err);
+  }
+  return null;
+};
+
+const deriveResultsDirFromUrl = (urlString) => {
+  if (!urlString) {
+    return null;
+  }
+  try {
+    const { pathname } = new URL(urlString);
+    const segments = pathname.split('/').filter(Boolean);
+    const resultsIndex = segments.indexOf('results');
+    if (resultsIndex >= 0 && segments[resultsIndex + 1]) {
+      return `results/${segments[resultsIndex + 1]}`;
+    }
+  } catch (err) {
+    console.warn('Failed to derive results directory from URL:', urlString, err);
+  }
+  return null;
+};
 
 const normalizeAndSortClasses = (classArray = []) => {
   return classArray
@@ -152,6 +256,10 @@ function App() {
   const [currentAnalysisId, setCurrentAnalysisId] = useState(null); // Track current analysis ID for pathway analysis
   const [completedEnrichmentTypes, setCompletedEnrichmentTypes] = useState({});
   const [canRunPathwayAnalysis, setCanRunPathwayAnalysis] = useState(false);
+  const [validationLoading, setValidationLoading] = useState(false);
+  const [validationError, setValidationError] = useState('');
+  const [validationResult, setValidationResult] = useState(null);
+  const [validationGeneCap, setValidationGeneCap] = useState(DEFAULT_VALIDATION_GENE_LIMIT);
   // Parameter States
   const [useDefaultParams, setUseDefaultParams] = useState(true);
   // Differential Analysis Parameters
@@ -395,6 +503,11 @@ function App() {
       setMergeMetadata(null);
     }
   }, [requiresMerge]);
+
+  useEffect(() => {
+    setValidationError('');
+    setValidationResult(null);
+  }, [summarizeAnalyses]);
 
   useEffect(() => {
     if (!uploadedInfo?.filePath) {
@@ -936,7 +1049,7 @@ function App() {
       setUploadDuration(null); // Clear previous upload duration
       setActiveUploadIndex(0);
       setUploadContexts({});
-    classCacheRef.current = new Map();
+      classCacheRef.current = new Map();
       setClassTable({ class: [] });
       setSelectedIllnessColumn('');
       setSelectedSampleColumn('');
@@ -969,10 +1082,10 @@ function App() {
       setAllColumns([]); // reset previous
       setUploadedInfos(null);
       setUploadedInfo(null);
-  setColumns([]);
+      setColumns([]);
       setActiveUploadIndex(0);
       setUploadContexts({});
-  classCacheRef.current = new Map();
+      classCacheRef.current = new Map();
       setClassTable({ class: [] });
       setSelectedIllnessColumn('');
       setSelectedSampleColumn('');
@@ -1779,7 +1892,7 @@ function App() {
       filePath: analysisFilePath,
       IlnessColumnName: selectedIllnessColumn,
       SampleColumnName: selectedSampleColumn,
-  selectedClasses: normalizeAndSortClasses(selectedClasses),
+      selectedClasses: normalizeAndSortClasses(selectedClasses),
       statisticalTest: selectedAnalyzes.statisticalTest,
       dimensionalityReduction: selectedAnalyzes.dimensionalityReduction,
       classificationAnalysis: selectedAnalyzes.classificationAnalysis,
@@ -1864,6 +1977,11 @@ function App() {
       setAnalyzing(false);
     }
   };
+  const handleValidationGeneCapChange = (event) => {
+    const rawValue = Number(event?.target?.value);
+    const nextValue = Number.isFinite(rawValue) ? rawValue : DEFAULT_VALIDATION_GENE_LIMIT;
+    setValidationGeneCap(VALIDATION_GENE_OPTIONS.includes(nextValue) ? nextValue : DEFAULT_VALIDATION_GENE_LIMIT);
+  };
 
   const handleEnrichmentAnalysis = async (analysisType = 'KEGG') => {
     const config = ENRICHMENT_OPTIONS[analysisType] || ENRICHMENT_OPTIONS.KEGG;
@@ -1876,84 +1994,6 @@ function App() {
       setError(`Please run at least one analysis before performing ${config.analysisDisplayName?.toLowerCase() || 'pathway analysis'}.`);
       return;
     }
-
-    const parseClassPairFromUrl = (urlString) => {
-      if (!urlString) {
-        return null;
-      }
-      try {
-        const { pathname } = new URL(urlString);
-        const segments = pathname.split('/').filter(Boolean);
-        const rankingIndex = segments.indexOf('feature_ranking');
-        if (rankingIndex >= 0 && segments[rankingIndex + 1]) {
-          return segments[rankingIndex + 1];
-        }
-        const summaryIndex = segments.indexOf('summaryStatisticalMethods');
-        if (summaryIndex >= 0 && segments[summaryIndex + 1] && !['png', 'pdf'].includes(segments[summaryIndex + 1])) {
-          return segments[summaryIndex + 1];
-        }
-      } catch (err) {
-        console.warn('Failed to parse class pair from URL:', urlString, err);
-      }
-      return null;
-    };
-
-    const deriveResultsDirFromUrl = (urlString) => {
-      if (!urlString) {
-        return null;
-      }
-      try {
-        const { pathname } = new URL(urlString);
-        const segments = pathname.split('/').filter(Boolean);
-        const resultsIndex = segments.indexOf('results');
-        if (resultsIndex >= 0 && segments[resultsIndex + 1]) {
-          return `results/${segments[resultsIndex + 1]}`;
-        }
-      } catch (err) {
-        console.warn('Failed to derive results directory from URL:', urlString, err);
-      }
-      return null;
-    };
-
-    const extractGenesFromCsv = (csvText, limit) => {
-      if (!csvText) {
-        return [];
-      }
-      const sanitized = csvText.replace(/^\uFEFF/, '');
-      const lines = sanitized
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-      if (lines.length <= 1) {
-        return [];
-      }
-      const delimiter = lines[0].includes(';') ? ';' : ',';
-      const genes = [];
-      const seen = new Set();
-      for (let i = 1; i < lines.length; i += 1) {
-        const parts = lines[i].split(delimiter);
-        if (!parts.length) {
-          continue;
-        }
-        const gene = (parts[0] || '')
-          .replace(/^"|"$/g, '')
-          .replace(/^'|'$/g, '')
-          .trim();
-        if (!gene) {
-          continue;
-        }
-        const dedupeKey = gene.toUpperCase();
-        if (seen.has(dedupeKey)) {
-          continue;
-        }
-        seen.add(dedupeKey);
-        genes.push(gene);
-        if (limit && limit > 0 && genes.length >= limit) {
-          break;
-        }
-      }
-      return genes;
-    };
 
     const candidates = [];
     const seenUrls = new Set();
@@ -2157,6 +2197,76 @@ function App() {
       }));
     }
   };
+
+  const resolveValidationSource = useCallback(() => {
+    if (summarizeAnalyses.length > 0) {
+      const latest = summarizeAnalyses[summarizeAnalyses.length - 1];
+      if (latest?.csvPath) {
+        return {
+          url: buildUrl(`/${latest.csvPath}`),
+          classPair: latest.classPair || null
+        };
+      }
+    }
+    for (let idx = previousAnalyses.length - 1; idx >= 0; idx -= 1) {
+      const analysis = previousAnalyses[idx];
+      for (const imagePath of analysis?.results || []) {
+        const downloadLinks = buildDownloadLinks(imagePath);
+        const rankedLink = downloadLinks.find((link) => /ranked_features_df\.csv/i.test(link?.href || ''));
+        if (rankedLink) {
+          return {
+            url: rankedLink.href,
+            classPair: parseClassPairFromUrl(rankedLink.href)
+          };
+        }
+      }
+    }
+    return null;
+  }, [summarizeAnalyses, previousAnalyses]);
+
+  const handleBiomarkerValidation = async () => {
+    if (validationLoading) {
+      return;
+    }
+    const source = resolveValidationSource();
+    if (!source) {
+      setValidationError('Please combine the biomarker rankings before running validation.');
+      return;
+    }
+    setValidationLoading(true);
+    setValidationError('');
+    const selectedGeneLimit = VALIDATION_GENE_OPTIONS.includes(validationGeneCap)
+      ? validationGeneCap
+      : DEFAULT_VALIDATION_GENE_LIMIT;
+
+    try {
+      const response = await apiFetch(source.url);
+      if (!response.ok) {
+        throw new Error('Failed to download the biomarker list for validation.');
+      }
+      const csvText = await response.text();
+      const genes = extractGenesFromCsv(csvText, selectedGeneLimit);
+      if (!genes.length) {
+        throw new Error('No gene symbols were found in the biomarker list.');
+      }
+      const apiResponse = await api.post('/api/biomarker-validation', { genes, maxGenes: selectedGeneLimit });
+      if (!apiResponse?.data?.success) {
+        throw new Error(apiResponse?.data?.message || 'Biomarker validation failed.');
+      }
+      setValidationResult({
+        ...apiResponse.data,
+        classPair: source.classPair || null,
+        geneList: genes
+      });
+    } catch (error) {
+      setValidationError(error.response?.data?.message || error.message || 'Unable to validate biomarkers.');
+      setValidationResult(null);
+    } finally {
+      setValidationLoading(false);
+    }
+  };
+
+  const canValidateBiomarkers = useMemo(() => Boolean(resolveValidationSource()), [resolveValidationSource]);
 
   // Final Adımı 1: Yeni analiz yapma butonu
   const handlePerformAnotherAnalysis = () => {
@@ -3628,6 +3738,14 @@ function App() {
                     }))}
                     datasetFileName={datasetNamesForReport}
                     enrichmentAnalyses={enrichmentAnalyses}
+                    onValidateBiomarkers={handleBiomarkerValidation}
+                    biomarkerValidationResult={validationResult}
+                    biomarkerValidationError={validationError}
+                    biomarkerValidationLoading={validationLoading}
+                    canValidateBiomarkers={canValidateBiomarkers}
+                    validationGeneCap={validationGeneCap}
+                    validationGeneOptions={VALIDATION_GENE_OPTIONS}
+                    onValidationGeneCapChange={handleValidationGeneCapChange}
                   />
                 </div>
               )}
