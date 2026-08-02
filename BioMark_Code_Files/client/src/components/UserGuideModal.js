@@ -9,7 +9,7 @@ const UserGuideModal = ({ onClose }) => {
     <div className="user-guide-overlay">
       <div className="user-guide-modal">
         <div className="popup-header">
-          <h2>Biomark - Biomarker Analysis Tool - User Guide</h2>
+          <h2>Biomark-X - Biomarker Analysis Tool - User Guide</h2>
           <button className="close-button" onClick={onClose}>×</button>
         </div>
         <div className="popup-content">
@@ -17,10 +17,10 @@ const UserGuideModal = ({ onClose }) => {
             This tool enables researchers to explore expression datasets to discover potential biomarkers. Upload your data, configure the analysis pipeline, and generate comprehensive visual and statistical reports in just a few clicks.
           </p>
           <div className="video-container">
-            {/* Embedded BioMark tutorial video */}
+            {/* Embedded BioMarkX tutorial video */}
             <iframe
-              src="https://www.youtube.com/embed/CDm9amayNTM?rel=0"
-              title="BioMark Tutorial"
+              src="https://www.youtube.com/embed/eHe9m-9iKb8?si=X7yObID8CGaZuZCZ"
+              title="BioMark-X Tutorial"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowFullScreen
             />
@@ -32,7 +32,7 @@ const UserGuideModal = ({ onClose }) => {
               &#10145;&#65039; Access the source code on GitHub:
               {' '}
               <a
-                href="https://github.com/itu-bioinformatics-database-lab/biomark"
+                href="https://github.com/itu-bioinformatics-database-lab/biomarkX"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -74,15 +74,27 @@ const UserGuideModal = ({ onClose }) => {
               </li>
 
               <li>
-                <strong>Step 4: Pick Two Classes</strong>
+                <strong>Step 3.5: Normalize (Optional)</strong>
                 <br />
-                Review the class distribution chart and select exactly two classes to compare (e.g., AD vs Control). Click "Analyze" to confirm.
+                Execute the desired preprocessing steps.
+              </li>
+
+              <li>
+                <strong>Step 4: Pick Two or More Classes</strong>
+                <br />
+                Review the class distribution chart and select two or more classes to compare (e.g., AD vs Control). Click "Analyze" to confirm.
+              </li>
+
+              <li>
+                <strong>Step 4.5: Handle Class Imbalance (Optional)</strong>
+                <br />
+                Resample with SMOTE or ADASYN.
               </li>
 
               <li>
                 <strong>Step 5: Choose Analysis and Parameters</strong>
                 <br />
-                Pick one primary analysis: Statistical Test (T‑test/ANOVA/Wilcoxon/Kruskal‑Wallis/Volcano), Dimensionality Reduction (PCA/t‑SNE/UMAP), or Classification (Logistic Regression, Random Forest, XGB, etc.). Optionally add a Model Explanation (SHAP/LIME/Permutation Importance) after selecting a classifier.
+                Pick one primary analysis: Statistical Test (T‑test/ANOVA/Wilcoxon/Kruskal‑Wallis/Volcano), Dimensionality Reduction (PCA/t‑SNE/UMAP), Survival Analysis (Kaplan-Meier/Cox Regression), or Classification (Logistic Regression, Random Forest, XGB, etc.). Optionally add a Model Explanation (SHAP/LIME/Permutation Importance) after selecting a classifier.
                 <br />
                 Use the "Feature selection stage" toggle to run on "All Features" or on "Selected Top‑N" features derived from earlier runs.
                 <br />
@@ -111,6 +123,18 @@ const UserGuideModal = ({ onClose }) => {
                 <strong>Combine Biomarker Lists</strong>
                 <br />
                 After running at least two biomarker‑producing analyses (e.g., SHAP + ANOVA), set Top‑N and choose an aggregation method, then click "Combine the above biomarker list in to one list". If multiple class pairs exist, select one. A summary heatmap and CSV download will be produced.
+              </li>
+
+              <li>
+                <strong>Perform Pathway Analyses</strong>
+                <br />
+                Perform KEGG, GO BP, GO CP, or GO MF to find pathways from most influentials Biomarkers.
+              </li>
+
+              <li>
+                <strong>Validate Biomarkers</strong>
+                <br />
+                Automatically research biomarkers from resources like Open Targets, JensenLab DISEASES, and EWAS Atlas to see relations between your findings and diseases.
               </li>
 
               <li>
